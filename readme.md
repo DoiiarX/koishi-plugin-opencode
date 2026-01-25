@@ -1,87 +1,175 @@
-# OpenCode SDK
+# Koishi Plugin: OpenCode
 
-The OpenCode SDK provides a type-safe JavaScript client for interacting with the OpenCode server.
+A Koishi plugin that integrates [OpenCode](https://github.com/opencode-ai/opencode) AI capabilities into your chatbot.
 
-## Installation / 安装
-
-Install the SDK via npm:
+## Installation
 
 ```bash
-npm install @opencode-ai/sdk
+# Using npm
+npm install koishi-plugin-opencode
+
+# Using yarn
+yarn add koishi-plugin-opencode
+
+# Using pnpm
+pnpm add koishi-plugin-opencode
 ```
 
-## Setup / 初始化
+## Configuration
 
-### Create Client (Server + Client)
-Create an instance that starts both a server and a client.
+Add the plugin to your Koishi config:
 
-```javascript
-import { createOpencode } from "@opencode-ai/sdk"
-
-const { client } = await createOpencode()
+```yaml
+plugins:
+  opencode:
+    # OpenCode Server address
+    baseUrl: "http://localhost:4096"
+    # Default session ID (optional)
+    defaultSession: ""
+    # Override default model (format: provider/model)
+    model: ""
+    # Generation timeout in milliseconds (default: 30000)
+    timeout: 30000
+    # Required permission level for commands (default: 1)
+    authority: 1
 ```
 
-**Options:**
-- `hostname` (string): Default "127.0.0.1"
-- `port` (number): Default 4096
-- `signal` (AbortSignal): Optional
-- `timeout` (number): Default 5000ms
-- `config`: Configuration object
+### Configuration Options
 
-Example with config:
-```javascript
-const opencode = await createOpencode({
-  hostname: "127.0.0.1",
-  port: 4096,
-  config: {
-    model: "anthropic/claude-3-5-sonnet-20241022",
-  },
-})
-console.log(`Server running at ${opencode.server.url}`)
-opencode.server.close()
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `baseUrl` | string | `http://localhost:4096` | OpenCode Server address |
+| `defaultSession` | string | - | Default session ID for all users |
+| `model` | string | - | Override default model (format: `provider/model`) |
+| `timeout` | number | `30000` | Message generation timeout in milliseconds |
+| `authority` | number | `1` | Required permission level for commands |
+
+## Commands
+
+### Basic Commands
+
+#### Send Message
+```
+.oc <message>
+.open <message>
+.opencode <message>
+```
+Send a message to OpenCode and receive a response.
+
+**Example:**
+```
+.oc What is the capital of France?
 ```
 
-### Client Only
-Connect to an existing running instance.
+#### Check Health
+```
+.oc.health
+.oc.h
+```
+Check the health status of your OpenCode Server.
 
-```javascript
-import { createOpencodeClient } from "@opencode-ai/sdk"
-
-const client = createOpencodeClient({
-  baseUrl: "http://localhost:4096",
-})
+**Example:**
+```
+.oc.h
 ```
 
-**Options:**
-- `baseUrl` (string): e.g., "http://localhost:4096"
-- `fetch` (function): Custom fetch implementation (default: `globalThis.fetch`)
-- `throwOnError` (boolean): Default `false`
+### Model Management
 
-## Modules / 模块说明
+#### List Models
+```
+.oc.models [keyword]
+.oc.m [keyword]
+```
+List all available models. Optionally filter by keyword.
 
-The SDK is divided into several modules:
-
-- **[Sessions](sessions.md)**: Manage chat sessions, send prompts, and interact with LLMs.
-- **[Files & Search](files.md)**: Search text, find files, and read content.
-- **[General API](general.md)**: Manage projects, app state, config, auth, and events.
-- **[TUI](tui.md)**: Control the Terminal User Interface (prompts, toasts, etc).
-
-## Error Handling / 错误处理
-
-The SDK throws errors that can be caught:
-
-```javascript
-try {
-  await client.session.get({ path: { id: "invalid-id" } })
-} catch (error) {
-  console.error("Failed to get session:", error.message)
-}
+**Example:**
+```
+.oc.models claude
 ```
 
-## Types / 类型定义
-
-Import types directly from the SDK:
-
-```javascript
-import type { Session, Message, Part } from "@opencode-ai/sdk"
+#### Set Default Model
 ```
+.oc.model.set <model>
+.oc.ms <model>
+```
+Set the default model for all conversations.
+
+**Example:**
+```
+.oc.ms anthropic/claude-3-5-sonnet-20241022
+```
+
+### Session Management
+
+#### List Sessions
+```
+.oc.session.list
+.oc.sl
+```
+List all available sessions.
+
+#### Create New Session
+```
+.oc.session.new
+.oc.sn
+```
+Create a new session for the current user.
+
+#### Switch Session
+```
+.oc.session.set <id>
+.oc.ss <id>
+```
+Switch to a specific session.
+
+#### View Session Info
+```
+.oc.session.info
+.oc.si
+```
+View information about the current session.
+
+#### Delete Session
+```
+.oc.session.delete <id>
+.oc.sdel <id>
+```
+Delete a specific session.
+
+## Permissions
+
+Different commands have different default authority levels:
+
+| Command Group | Authority Level |
+|---------------|-----------------|
+| Basic Commands | 1 |
+| Session Info | 1 |
+| List Models | 1 |
+| Switch Session | 2 |
+| Set Model | 3 |
+| List Sessions | 3 |
+| Create Session | 3 |
+| Delete Session | 4 |
+
+## Requirements
+
+- [Koishi](https://koishi.js.org/) v4.18.7 or higher
+- [OpenCode](https://github.com/opencode-ai/opencode) Server running and accessible
+
+## Getting Started
+
+1. Install OpenCode Server: [Installation Guide](https://github.com/opencode-ai/opencode)
+2. Start the OpenCode Server
+3. Install this plugin in Koishi
+4. Configure the `baseUrl` to point to your OpenCode Server
+5. Restart Koishi
+
+## License
+
+MIT
+
+## Links
+
+- [GitHub Repository](https://github.com/DoiiarX/koishi-plugin-opencode)
+- [OpenCode Documentation](https://opencode.ai/docs/)
+- [Koishi Documentation](https://koishi.chat/zh-CN/guide/)
