@@ -1,0 +1,203 @@
+name: Update Plugin Documentation
+
+on:
+  schedule:
+    # 每12小时运行一次 (UTC时间)
+    - cron: "0 */12 * * *"
+  workflow_dispatch:
+    inputs:
+      lookback_hours:
+        description: "回溯小时数"
+        required: false
+        default: "4"
+        type: string
+
+env:
+  LOOKBACK_HOURS: ${{ github.event.inputs.lookback_hours || '4' }}
+
+jobs:
+  update-plugin-docs:
+    if: github.repository == 'DoiiarX/koishi-plugin-opencode'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # 获取完整历史记录以访问提交
+          persist-credentials: false
+
+      - name: Get recent plugin commits
+        id: commits
+        run: |
+          # 获取最近涉及插件目录的提交
+          COMMITS=$(git log --since="${{ env.LOOKBACK_HOURS }} hours ago" --pretty=format:"- %h %s" -- "src/" 2>/dev/null || echo "")
+
+          if [ -z "$COMMITS" ]; then
+            echo "No plugin commits in last ${{ env.LOOKBACK_HOURS }} hours"
+            echo "has_commits=false" >> $GITHUB_OUTPUT
+          else
+            echo "has_commits=true" >> $GITHUB_OUTPUT
+            {
+              echo "list<<EOF"
+              echo "$COMMITS"
+              echo "EOF"
+            } >> $GITHUB_OUTPUT
+            echo "Found plugin commits:"
+            echo "$COMMITS"
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: List plugins without README
+        id: check_plugins
+        if: steps.commits.outputs.has_commits == 'true'
+        run: |
+          echo "Checking README.md status..."
+          if [ ! -f "README.md" ]; then
+            echo "has_readme=false" >> $GITHUB_OUTPUT
+            echo "Missing README.md"
+          else
+            echo "has_readme=true" >> $GITHUB_OUTPUT
+            echo "README.md exists"
+          fi
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+
+      - name: Cache Python dependencies
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: ${{ runner.os }}-venv-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-venv-
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: List plugins without README
+        id: check_plugins
+        if: steps.commits.outputs.has_commits == 'true'
+        run: |
+          echo "Checking for plugins without README.md..."
+          plugins_without_readme=""
+
+          # 检查 user_plugins
+          for plugin_dir in src/user_plugins/*_plugin; do
+            if [ -d "$plugin_dir" ]; then
+              plugin_name=$(basename "$plugin_dir")
+              if [ ! -f "$plugin_dir/README.md" ]; then
+                plugins_without_readme="$plugins_without_readme$src/user_plugins/$plugin_name\n"
+                echo "  Missing README: $plugin_name"
+              fi
+            fi
+          done
+
+          # 检查 test_plugins
+          for plugin_dir in src/test_plugins/*_plugin; do
+            if [ -d "$plugin_dir" ]; then
+              plugin_name=$(basename "$plugin_dir")
+              if [ ! -f "$plugin_dir/README.md" ]; then
+                plugins_without_readme="$plugins_without_readme$src/test_plugins/$plugin_name\n"
+                echo "  Missing README: $plugin_name"
+              fi
+            fi
+          done
+
+          if [ -z "$plugins_without_readme" ]; then
+            echo "all_have_readme=true" >> $GITHUB_OUTPUT
+            echo "All plugins have README.md"
+          else
+            echo "all_have_readme=false" >> $GITHUB_OUTPUT
+            {
+              echo "list<<EOF"
+              echo -e "$plugins_without_readme"
+              echo "EOF"
+            } >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run OpenCode to generate plugin docs
+        if: steps.commits.outputs.has_commits == 'true'
+        uses: anomalyco/opencode/github@latest
+        env:
+          ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          model: zhipuai-coding-plan/glm-4.7
+          prompt: |
+            检查 koishi-plugin-opencode 插件是否需要更新 README.md 文档。
+
+            <recent_commits>
+            ${{ steps.commits.outputs.list }}
+            </recent_commits>
+
+            <has_readme>
+            ${{ steps.check_plugins.outputs.has_readme }}
+            </has_readme>
+
+            任务说明：
+            检查 koishi-plugin-opencode 的源代码和 README.md 文档是否同步。
+
+            1. README.md 应包含以下内容：
+               - **插件简介**：简要描述插件的功能和用途
+               - **安装方法**：npm/yarn/pnpm 安装命令
+               - **配置说明**：插件配置项说明（从 src/index.ts 的 Schema 定义）
+               - **使用示例**：命令使用示例
+               - **命令列表**：所有可用命令及其权限等级
+               - **系统要求**：Koishi 版本要求、依赖项
+               - **链接**：GitHub 仓库、相关文档链接
+
+            2. 检查点：
+               - 读取 src/index.ts，分析插件配置项
+               - 检查 README.md 中的配置说明是否与代码一致
+               - 检查 README.md 中的命令列表是否完整
+               - 检查是否有新的配置项或命令未在文档中说明
+               - 检查中英文文档（README.md 和 README.zh-CN.md）是否同步
+
+            3. 文档规范：
+               - 使用 Markdown 格式
+               - 代码块使用适当的语法高亮
+               - 保持简洁明了，避免冗余描述
+               - 同时更新中英文两个 README 文件
+
+            4. 工作流程：
+               - 读取 src/index.ts 和 package.json
+               - 分析插件的所有配置项、命令、权限等级
+               - 检查现有 README.md 和 README.zh-CN.md
+               - 如需要，更新两个 README 文件
+               - 提交文档变更
+
+            注意：
+            - 文档应该准确反映当前代码的状态
+            - 如果文档已是最新的，报告"无需更新"
+            - 只提交 README.md 和 README.zh-CN.md，不要修改代码文件
+            - 确保中英文文档内容同步
+
+            步骤：
+            1. 读取源代码和现有文档
+            2. 检查文档是否与代码一致
+            3. 如需要，更新 README.md 和 README.zh-CN.md
+            4. 提交文档变更（如果有的话）
+            5. 如果无需更新，直接结束并说明情况
+
+            #share: true

@@ -1,0 +1,159 @@
+name: Issue Triage
+
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Triage issue with OpenCode
+        uses: anomalyco/opencode/github@latest
+        env:
+          ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENCODE_PERMISSION: >-
+            {
+              "bash": {
+                "*": "deny",
+                "gh issue*": "allow"
+              },
+              "webfetch": "deny"
+            }
+        with:
+          model: zhipuai-coding-plan/glm-4.7
+          use_github_token: true
+          prompt: |
+            Issue Triage 任务
+
+            **核心规则：**
+            - **禁止猜测性解决方案**：不得基于猜测、假设或表面现象提出解决方案。所有分析和建议必须基于对代码原理的明确理解。
+            - **禁止降级回退建议**：不得建议"降级版本"、"回退代码"、"临时绕过"等方案。所有问题必须通过正确的修复解决。
+            - **必须明确问题原理**：如果提出问题分析或解决方案，必须说明代码的工作原理、为什么会出问题、以及正确的解决原理。
+            - **只进行分类和标签**：triage 的唯一目的是正确分类 issue 和添加标签，不得添加"可能的问题"、"尝试这个"等猜测性的解决方案评论。
+
+            Issue 基本信息：
+            - 编号: ${{ github.event.issue.number }}
+            - 标题: ${{ github.event.issue.title }}
+            - 作者: ${{ github.event.issue.user.login }}
+            - 链接: ${{ github.server_url }}/${{ github.repository }}/issues/${{ github.event.issue.number }}
+
+            Issue 内容：
+            ${{ github.event.issue.body }}
+
+            请按照以下步骤完成 triage：
+
+            步骤 1：检查信息完整性
+            根据以下清单检查 issue 信息是否完整：
+
+            完整性检查清单：
+            □ 标题是否过短（少于 10 字符）
+            □ 内容是否为空
+            □ 内容是否过短（少于 20 字符）
+            □ 是否缺少关键信息：
+               - 如果是 Bug：错误日志、复现步骤、预期行为、Koishi 版本
+               - 如果是 Feature：功能描述、使用场景
+               - 如果是 Question：具体问题、使用上下文
+            □ 描述是否不清楚，难以理解
+
+            如果发现以上任何一项为"是"（不完整），标记为：[❌ 信息不完整]
+            否则标记为：[✅ 信息完整]
+
+            步骤 2：分类判断
+            根据标题和内容判断 issue 类型：
+
+            判断规则：
+            - Bug：标题包含 "[Bug]"、"[bug]"、"fix"、"修复"、"错误"、"失败"等关键词，或内容包含错误日志、崩溃信息、异常堆栈
+            - Feature/Enhancement：标题包含 "[Feature]"、"[feat]"、"[Enhancement]"、"add"、"新增"、"添加"、"建议"等关键词，或描述新功能需求
+            - Question：标题是疑问句形式（如"如何"、"怎么"、"是否可以"），或内容询问如何使用某个功能
+            - Documentation：标题包含 "[Doc]"、"[文档]"、"doc"、"更新文档"、"README"等关键词，或涉及文档更新
+            - Other：不符合以上分类的情况
+
+            标记分类结果：[分类：bug/feature/enhancement/question/documentation/other]
+
+            步骤 3：优先级评估
+            根据分类评估优先级：
+
+            Bug 优先级规则：
+            - critical：插件无法加载、核心功能失效、导致 Koishi 崩溃、安全漏洞
+            - high：重要命令失败、配置项错误、API 调用失败
+            - medium：次要功能问题、用户体验问题
+            - low：轻微问题、文档小错误
+
+            Feature 优先级规则：
+            - high：核心功能增强、大量用户需求
+            - medium：功能改进、性能优化
+            - low：小改进、用户体验优化
+
+            其他分类默认为 low，除非有紧急说明
+
+            标记优先级：[优先级：critical/high/medium/low]
+
+            步骤 4：标签建议
+            根据分类和优先级，确定需要添加的标签：
+
+            Bug 相关：
+            - bug
+            - 根据优先级添加：critical-priority / high-priority / medium-priority / low-priority
+
+            Feature/Enhancement：enhancement
+            Question：question
+            Documentation：documentation
+            信息不完整：needs-info
+            无法分类：needs-triage
+
+            标记需要添加的标签：[标签：bug, critical-priority, ...]
+
+            步骤 5：需要执行的操作
+
+            根据检查结果，决定需要执行的操作并自行执行：
+
+            [✅ 情况 A：信息不完整]
+            操作：
+            1. 修改 issue 标题为："需要更多信息：[原标题]"
+            2. 修改 issue 内容：在原有内容前添加信息补充说明，**只列出缺失信息，不添加任何猜测性建议**
+            3. 添加标签：needs-info
+
+            [✅ 情况 B：信息完整且分类明确]
+            操作：
+            1. 添加分类标签
+            2. 添加优先级标签
+            3. 不修改标题和内容
+            4. 不添加任何评论或解决方案
+
+            [⚠️ 情况 C：信息完整但无法明确分类]
+            操作：
+            1. 添加 needs-triage 标签
+            2. 添加评论："需要更多信息才能确定分类"，**不提供任何猜测性分类或解决方案**
+
+            步骤 6：输出执行摘要
+            最后，简要说明步骤5成功执行了什么操作，例如：
+
+            - 已修改标题并添加 needs-info 标签
+            - 已分类为 bug (high)，已添加标签
+            - 已添加 needs-triage 标签，请求人工确认
+
+            **严格禁止**：
+            - 不得在执行摘要中包含任何解决方案、建议或猜测
+            - 不得在修改的 issue 内容中添加"可能是因为"、"试试这个"等猜测性文字
+            - 只报告执行的分类和标签操作
+
+            请以以下格式输出执行摘要：
+
+            已完成操作：[描述执行的操作]
+
+            例如：
+            已完成操作：已修改标题为"需要更多信息：测试"，已添加 needs-info 标签
+
+            或者：
+            已完成操作：已分类为 bug (high)，已添加标签 bug, high-priority

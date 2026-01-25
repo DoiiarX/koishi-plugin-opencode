@@ -1,0 +1,151 @@
+name: PR Review
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  pr-review:
+    # 严格的身份验证：只有仓库拥有者或团队成员的 /review 命令才能触发
+    if: |
+      github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/review') &&
+      contains(fromJson('["OWNER","MEMBER"]'), github.event.comment.author_association)
+    
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read        # 只读代码
+      pull-requests: write  # 允许写评论
+      issues: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Get PR number
+        id: pr-number
+        run: |
+          echo "number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
+
+      - name: Get PR details
+        id: pr-details
+        run: |
+          gh api /repos/${{ github.repository }}/pulls/${{ steps.pr-number.outputs.number }} > pr_data.json
+          echo "title=$(jq -r .title pr_data.json)" >> $GITHUB_OUTPUT
+          echo "sha=$(jq -r .head.sha pr_data.json)" >> $GITHUB_OUTPUT
+          echo "body=$(jq -r .body pr_data.json | jq -Rs .)" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run OpenCode Review
+        uses: anomalyco/opencode/github@latest
+        env:
+          ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENCODE_PERMISSION: '{"bash": {"*": "deny", "gh*": "allow", "gh pr review*": "deny"}}'
+        with:
+          model: zhipuai-coding-plan/glm-4.7
+          use_github_token: true
+          prompt: |
+            审查这个 Pull Request 的代码变更。
+
+            <pr-title>
+            ${{ steps.pr-details.outputs.title }}
+            </pr-title>
+
+            <pr-number>
+            ${{ steps.pr-number.outputs.number }}
+            </pr-number>
+
+            <pr-description>
+            ${{ steps.pr-details.outputs.body }}
+            </pr-description>
+
+            审查任务：
+            1. 代码风格检查 - 遵循 TypeScript 和 Koishi 插件开发规范：
+               - 检查是否符合 TypeScript 类型规范
+               - 检查函数是否超过 80 行（建议）
+               - 检查文件是否超过 300 行
+               - 检查是否使用了适当的类型声明，避免使用 `any`
+               - 检查是否包含 JSDoc 注释（对于公共 API）
+               - 检查是否正确使用 async/await
+
+            2. 代码质量检查：
+               - 查找潜在的 bug
+               - 检查错误处理是否完善（try-catch，错误日志）
+               - 检查异步操作是否正确使用（Promise、async/await）
+               - 检查是否有未使用的导入或变量
+               - 检查是否有明显的性能问题
+
+            3. Koishi 插件规范检查：
+               - 检查是否正确使用 Plugin 定义
+               - 检查 Schema 定义是否正确
+               - 检查命令注册是否完整（name, action, options）
+               - 检查权限等级设置是否合理
+               - 检查依赖注入（inject）使用是否正确
+
+            4. 安全性检查：
+               - 检查是否有命令注入风险
+               - 检查是否有 XSS 风险（如果有用户输入渲染）
+               - 检查敏感信息是否暴露（API keys, tokens）
+               - 检查是否有未验证的用户输入直接执行
+
+             审查原则：
+             - 专注于实际的代码质量问题，不要对代码风格过于苛刻
+             - 如果代码已经遵循了良好的实践，不要强制要求重构
+             - 建议应该是建设性的，指出具体问题和改进方向
+             - 如果代码完全符合规范，只评论 "lgtm" 且不添加其他内容
+
+             **核心规则（禁止行为）：**
+             - **禁止降级回退**：不得建议"降级版本"、"回退到旧版本"、"临时禁用功能"等降级方案。所有问题必须通过正确的修复解决。
+             - **禁止猜测性建议**：不得基于猜测、假设或经验法则提出修改建议。每个评论必须基于代码的实际情况和明确的技术原理。
+             - **必须明确原理**：指出问题时，必须说明代码的具体工作原理、为什么当前实现是错误的、以及正确的实现原理。不允许"看起来有问题"、"可能需要"等模糊表述。
+             - **必须理解消息性质**：如果代码涉及网络请求、API 调用、消息处理等，必须理解消息的性质（请求/响应、同步/异步、状态管理等）才能提出评论。
+             - **禁止绕过问题**：不得建议 try-catch 捕获后忽略错误、降级错误处理、添加"todo"注释等绕过问题的做法。
+
+             **评论规范：**
+             - 错误指出格式："[代码行]：[问题描述]。原理：[技术原理说明]。修复：[具体修复建议]"
+             - 每个评论必须包含"原理"部分，说明代码的工作机制
+             - 修复建议必须是直接的、解决根本问题的方案
+             - 如果不确定代码的工作原理，不要添加评论，标记为需要人工审查
+
+            评论方式：
+            - 使用 GitHub PR review comments 在代码行上添加评论
+            - 如果有明确的修复建议，包含在代码建议块中
+            - 如果问题复杂，可以在 PR 的总体评论中说明
+            - 只为实际的违规或有问题的地方添加评论
+
+            使用 gh CLI 创建评论：
+            - 在准确的行号上添加评论
+            - 如果有修复建议，包含在建议代码块中
+            - 编写修复建议时，确保推荐的代码是有效的 TypeScript 语法，避免缺失闭合括号等语法错误
+            - 一般情况下，写评论而不是写建议的修改
+
+            gh CLI 评论命令格式：
+            ```bash
+            gh api \
+              --method POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              /repos/${{ github.repository }}/pulls/${{ steps.pr-number.outputs.number }}/comments \
+              -f 'body=[问题描述]' -f 'commit_id=${{ steps.pr-details.outputs.sha }}' -f 'path=[文件路径]' -F "line=[行号]" -f 'side=RIGHT'
+            ```
+
+            只为实际的违规创建评论。如果代码完全符合所有指导原则，使用 gh CLI 在 PR 上添加评论："lgtm"，不添加任何其他内容！
+
+            重要限制：
+            - 只读取和分析代码，不修改任何文件
+            - 不创建新的提交或分支
+            - 不更新 PR 内容
+            - 只添加 PR review comments
