@@ -1,6 +1,6 @@
 # Koishi 插件：OpenCode
 
-[English](README.md)
+简体中文 | [English](README.md)
 
 一个将 [OpenCode](https://github.com/opencode-ai/opencode) AI 能力集成到 Koishi 聊天机器人的插件。
 
