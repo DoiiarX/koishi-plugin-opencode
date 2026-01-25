@@ -1,5 +1,7 @@
 # Koishi Plugin: OpenCode
 
+[简体中文](README.zh-CN.md) | English
+
 A Koishi plugin that integrates [OpenCode](https://github.com/opencode-ai/opencode) AI capabilities into your chatbot.
 
 ## Installation
