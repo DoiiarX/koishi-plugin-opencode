@@ -13,8 +13,27 @@
   "keywords": [
     "chatbot",
     "koishi",
-    "plugin"
+    "plugin",
+    "opencode",
+    "ai"
   ],
+  "contributors": [
+    "Doiiiars <doiiars@qq.com>"
+  ],
+  "homepage": "https://github.com/DoiiarX/koishi-plugin-opencode",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DoiiarX/koishi-plugin-opencode.git"
+  },
+  "koishi": {
+    "description": {
+      "zh": "OpenCode SDK Koishi 插件，提供与 OpenCode 服务器的交互能力",
+      "en": "Koishi plugin for OpenCode SDK"
+    }
+  },
+  "dependencies": {
+    "@opencode-ai/sdk": "^1.1.36"
+  },
   "devDependencies": {},
   "peerDependencies": {
     "koishi": "^4.18.7"
