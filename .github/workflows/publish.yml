@@ -23,7 +23,7 @@ jobs:
         run: git config --global core.autocrlf false
 
       - name: Create Koishi App
-        run: npm create koishi@latest koishi-app -y
+        run: echo "n" | npm create koishi@latest koishi-app -y
 
       - name: Create External Directory
         run: mkdir -p koishi-app/external/opencode
