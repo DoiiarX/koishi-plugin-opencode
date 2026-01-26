@@ -431,6 +431,77 @@ export function apply(ctx: Context, config: Config) {
       }
     })
 
+  ctx.command('oc.agents', {
+    authority: config.authority || 1,
+  })
+    .action(async () => {
+      try {
+        const c = await ensureClient()
+        const { data: agents } = await c.app.agents()
+
+        if (!agents || agents.length === 0) {
+          return '暂无可用 agents'
+        }
+
+        const list = agents.map(a =>
+          `🤖 ${a.name || a.id || '未命名'}${a.description ? `\n   ${a.description}` : ''}`
+        ).join('\n\n')
+
+        return `📋 可用 Agents:\n\n${list}`
+
+      } catch (error) {
+        ctx.logger.error('获取 agents 列表失败:', error)
+        return '❌ 获取 agents 列表失败'
+      }
+    })
+
+  ctx.command('oc.session.messages [page:number]', {
+    authority: config.authority || 1,
+  })
+    .action(async ({ session }, page) => {
+      try {
+        const c = await ensureClient()
+        const sessionId = getSessionId(session, config.defaultSession)
+
+        const { data: messages } = await c.session.messages({
+          path: { id: sessionId }
+        })
+
+        // Filter only user messages
+        const userMessages = messages.filter((m: any) => m.info?.role === 'user')
+
+        if (userMessages.length === 0) {
+          return '暂无用户消息'
+        }
+
+        // Pagination setup
+        const pageSize = 5
+        const totalPages = Math.ceil(userMessages.length / pageSize)
+        const currentPage = page || 1
+
+        if (currentPage < 1 || currentPage > totalPages) {
+          return `❌ 页码超出范围 (1-${totalPages})`
+        }
+
+        // Get messages for current page (newest first)
+        const startIndex = (currentPage - 1) * pageSize
+        const endIndex = startIndex + pageSize
+        const pageMessages = userMessages.slice(startIndex, endIndex).reverse()
+
+        // Format messages
+        const formatted = pageMessages.map((m: any, idx: number) => {
+          const textParts = m.parts?.filter((p: any) => p.type === 'text').map((p: any) => p.text).join('\n')
+          const preview = textParts || '[无文本]'
+          return `${startIndex + idx + 1}. ${preview.substring(0, 100)}${preview.length > 100 ? '...' : ''}`
+        }).join('\n')
+
+        return `📜 消息历史 (第 ${currentPage}/${totalPages} 页):\n\n${formatted}\n\n💡 使用 "oc.messages ${currentPage + 1}" 查看下一页`
+      } catch (error) {
+        ctx.logger.error('获取消息历史失败:', error)
+        return '❌ 获取消息历史失败'
+      }
+    })
+
   clientPromise.then(() => {
     setupEventStream(client, ctx)
   })
