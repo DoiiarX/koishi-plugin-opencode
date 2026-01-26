@@ -13,14 +13,37 @@ jobs:
       id-token: write
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Git Config
+        run: git config --global core.autocrlf false
+
+      - name: Create Koishi App
+        run: npm create koishi@latest koishi-app -y
+
+      - name: Create External Directory
+        run: mkdir -p koishi-app/external/opencode
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          path: koishi-app/external/opencode
+
+      - name: Install dependencies
+        run: |
+          cd koishi-app
+          npm install
+
+      - name: Build
+        run: |
+          cd koishi-app
+          npm run build opencode
+
       - name: Publish to npm
-        run: npm publish
+        run: |
+          cd koishi-app
+          npm run pub opencode
