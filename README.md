@@ -243,6 +243,55 @@ Different commands have different default authority levels:
 - [Koishi](https://koishi.js.org/) v4.18.7 or higher
 - [OpenCode](https://github.com/opencode-ai/opencode) Server running and accessible
 
+## Platform Support
+
+This plugin leverages Koishi's powerful adapter system to provide multi-platform OpenCode interactions. Koishi supports a wide range of chat platforms through official and third-party adapters:
+
+### Officially Supported Platforms
+
+- DingTalk (钉钉)
+- Discord
+- KOOK
+- Feishu (飞书)
+- LINE
+- Email
+- Matrix
+- QQ
+- Slack
+- Telegram
+- WeChat Official Account (微信公众号)
+- WeCom (企业微信)
+- WhatsApp
+- Zulip
+
+### Multi-Platform Integration
+
+- **Pre-installed Adapters**: Common adapters are pre-installed and can be found in the `adapter` section of your Koishi plugin configuration
+- **Multiple Accounts**: A single Koishi application can connect to multiple accounts across different platforms simultaneously
+- **Load Balancing**: Multiple bots sharing the same platform share user data, enabling easy load balancing
+- **Extensibility**: In addition to official adapters, there are numerous third-party platform adapters available in the marketplace
+
+### Koishi Ecosystem
+
+Built on Koishi, this plugin benefits from:
+
+- **Rich Plugin Ecosystem**: Access to thousands of plugins extending functionality
+- **Advanced Permission Management**: Fine-grained authority control for different commands
+- **Lifecycle Management**: Robust hooks for plugin initialization and lifecycle events
+- **Configuration Management**: Centralized and flexible configuration system
+- **Long-term Community Maintenance**: Koishi is a mature, actively maintained chatbot framework with a strong community
+
+### Platform-Specific Preparation
+
+Different platforms have varying integration requirements, which may include:
+- Developer account registration on the platform
+- Public server deployment
+- API key configuration
+
+Detailed guides for each platform are available in the respective adapter plugin documentation.
+
+**Good News**: Most Koishi features are platform-independent. You can explore and learn the plugin's capabilities in the sandbox while preparing for your target platform deployment.
+
 ## Getting Started
 
 1. Install OpenCode Server: [Installation Guide](https://github.com/opencode-ai/opencode)
