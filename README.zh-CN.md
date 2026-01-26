@@ -59,89 +59,87 @@ plugins:
 
 #### 发送消息
 ```
-.oc <消息>
-.open <消息>
-.opencode <消息>
+oc <消息>
 ```
 向 OpenCode 发送消息并获取回复。
 
 **示例：**
 ```
-.oc 法国的首都是哪里？
+oc 法国的首都是哪里？
 ```
 
 #### 检查健康状态
 ```
-.oc.health
-.oc.h
+oc.health
+oc.h
 ```
 检查 OpenCode 服务器的健康状态。
 
 **示例：**
 ```
-.oc.h
+oc.h
 ```
 
 ### 模型管理
 
 #### 列出模型
 ```
-.oc.models [关键词]
-.oc.m [关键词]
+oc.models [关键词]
+oc.m [关键词]
 ```
 列出所有可用模型。可选择性按关键词过滤。
 
 **示例：**
 ```
-.oc.models claude
+oc.models claude
 ```
 
 #### 设置默认模型
 ```
-.oc.model.set <模型>
-.oc.ms <模型>
+oc.model.set <模型>
+oc.ms <模型>
 ```
 为所有对话设置默认模型。
 
 **示例：**
 ```
-.oc.ms anthropic/claude-3-5-sonnet-20241022
+oc.ms anthropic/claude-3-5-sonnet-20241022
 ```
 
 ### 会话管理
 
 #### 列出会话
 ```
-.oc.session.list
-.oc.sl
+oc.session.list
+oc.sl
 ```
 列出所有可用会话。
 
 #### 创建新会话
 ```
-.oc.session.new
-.oc.sn
+oc.session.new
+oc.sn
 ```
 为当前用户创建新会话。
 
 #### 切换会话
 ```
-.oc.session.set <id>
-.oc.ss <id>
+oc.session.set <id>
+oc.ss <id>
 ```
 切换到指定会话。
 
 #### 查看会话信息
 ```
-.oc.session.info
-.oc.si
+oc.session.info
+oc.si
 ```
 查看当前会话的信息。
 
 #### 删除会话
 ```
-.oc.session.delete <id>
-.oc.sdel <id>
+oc.session.delete <id>
+oc.sdel <id>
 ```
 删除指定会话。
 

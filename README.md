@@ -59,9 +59,87 @@ plugins:
 
 #### Send Message
 ```
-.oc <message>
-.open <message>
-.opencode <message>
+oc <message>
+```
+Send a message to OpenCode and receive a response.
+
+**Example:**
+```
+oc What is capital of France?
+```
+
+#### Check Health
+```
+oc.health
+oc.h
+```
+Check the health status of your OpenCode Server.
+
+**Example:**
+```
+oc.h
+```
+
+### Model Management
+
+#### List Models
+```
+oc.models [keyword]
+oc.m [keyword]
+```
+List all available models. Optionally filter by keyword.
+
+**Example:**
+```
+oc.models claude
+```
+
+#### Set Default Model
+```
+oc.model.set <model>
+oc.ms <model>
+```
+Set the default model for all conversations.
+
+**Example:**
+```
+oc.ms anthropic/claude-3-5-sonnet-20241022
+```
+
+### Session Management
+
+#### List Sessions
+```
+oc.session.list
+oc.sl
+```
+List all available sessions.
+
+#### Create New Session
+```
+oc.session.new
+oc.sn
+```
+Create a new session for the current user.
+
+#### Switch Session
+```
+oc.session.set <id>
+oc.ss <id>
+```
+Switch to a specific session.
+
+#### View Session Info
+```
+oc.session.info
+oc.si
+```
+View information about the current session.
+
+#### Delete Session
+```
+oc.session.delete <id>
+oc.sdel <id>
 ```
 Send a message to OpenCode and receive a response.
 
