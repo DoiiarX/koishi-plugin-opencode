@@ -6,15 +6,22 @@ A Koishi plugin that integrates [OpenCode](https://github.com/opencode-ai/openco
 
 ## Installation
 
+### For Users
+
+Search and install directly from Koishi plugin marketplace in your Koishi console:
+1. Open Koishi console
+2. Navigate to Plugin Marketplace
+3. Search for `opencode`
+4. Click to install
+
+### For Developers
+
+Clone the repository and develop locally:
+
 ```bash
-# Using npm
-npm install koishi-plugin-opencode
-
-# Using yarn
-yarn add koishi-plugin-opencode
-
-# Using pnpm
-pnpm add koishi-plugin-opencode
+git clone https://github.com/DoiiarX/koishi-plugin-opencode.git
+cd koishi-plugin-opencode
+npm install
 ```
 
 ## Configuration

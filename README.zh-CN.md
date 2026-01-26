@@ -6,15 +6,22 @@
 
 ## 安装
 
+### 普通用户
+
+在 Koishi 控制台的插件商店中直接搜索安装：
+1. 打开 Koishi 控制台
+2. 进入插件市场
+3. 搜索 `opencode`
+4. 点击安装
+
+### 开发者
+
+克隆仓库并在本地开发：
+
 ```bash
-# 使用 npm
-npm install koishi-plugin-opencode
-
-# 使用 yarn
-yarn add koishi-plugin-opencode
-
-# 使用 pnpm
-pnpm add koishi-plugin-opencode
+git clone https://github.com/DoiiarX/koishi-plugin-opencode.git
+cd koishi-plugin-opencode
+npm install
 ```
 
 ## 配置
