@@ -169,8 +169,6 @@ export function apply(ctx: Context, config: Config) {
   ctx.command('oc <message:text>', {
     authority: config.authority || 1,
   })
-    .alias('open')
-    .alias('opencode')
     .action(async ({ session }, message) => {
       try {
         const c = await ensureClient()
