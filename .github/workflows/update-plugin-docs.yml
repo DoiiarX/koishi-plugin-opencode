@@ -55,12 +55,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
-      - name: List plugins without README
+      - name: Check README status
         id: check_plugins
         if: steps.commits.outputs.has_commits == 'true'
         run: |
@@ -71,69 +70,6 @@ jobs:
           else
             echo "has_readme=true" >> $GITHUB_OUTPUT
             echo "README.md exists"
-          fi
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version-file: ".python-version"
-
-      - name: Cache Python dependencies
-        uses: actions/cache@v4
-        with:
-          path: .venv
-          key: ${{ runner.os }}-venv-${{ hashFiles('uv.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-venv-
-
-      - name: Install dependencies
-        run: uv sync --frozen
-
-      - name: List plugins without README
-        id: check_plugins
-        if: steps.commits.outputs.has_commits == 'true'
-        run: |
-          echo "Checking for plugins without README.md..."
-          plugins_without_readme=""
-
-          # 检查 user_plugins
-          for plugin_dir in src/user_plugins/*_plugin; do
-            if [ -d "$plugin_dir" ]; then
-              plugin_name=$(basename "$plugin_dir")
-              if [ ! -f "$plugin_dir/README.md" ]; then
-                plugins_without_readme="$plugins_without_readme$src/user_plugins/$plugin_name\n"
-                echo "  Missing README: $plugin_name"
-              fi
-            fi
-          done
-
-          # 检查 test_plugins
-          for plugin_dir in src/test_plugins/*_plugin; do
-            if [ -d "$plugin_dir" ]; then
-              plugin_name=$(basename "$plugin_dir")
-              if [ ! -f "$plugin_dir/README.md" ]; then
-                plugins_without_readme="$plugins_without_readme$src/test_plugins/$plugin_name\n"
-                echo "  Missing README: $plugin_name"
-              fi
-            fi
-          done
-
-          if [ -z "$plugins_without_readme" ]; then
-            echo "all_have_readme=true" >> $GITHUB_OUTPUT
-            echo "All plugins have README.md"
-          else
-            echo "all_have_readme=false" >> $GITHUB_OUTPUT
-            {
-              echo "list<<EOF"
-              echo -e "$plugins_without_readme"
-              echo "EOF"
-            } >> $GITHUB_OUTPUT
           fi
 
       - name: Run OpenCode to generate plugin docs
