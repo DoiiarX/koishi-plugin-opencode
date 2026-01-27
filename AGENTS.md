@@ -1,5 +1,7 @@
 # Version Management
 
+> 📝 **查看变更日志**: [English](./CHANGELOG.md) | [简体中文](./CHANGELOG.zh-CN.md)
+
 ## 更新插件版本
 > [!IMPORTANT]
 > 此命令必须在 `koishi-app` 根目录运行（即工作区根目录），而不是插件目录。
@@ -101,6 +103,10 @@ npm run dep
 npm run clone [repo]
 # 例如: npm run clone koishijs/koishi-plugin-forward
 ```
+
+## Documentation
+
+- [SDK Type Definitions](./docs/SDK_TYPES.md)
 
 ## Links
 
