@@ -26,6 +26,15 @@ export interface Config {
   model?: string
   authority?: number
   timeout?: number
+  showReasoning?: boolean
+}
+
+export interface Config {
+  baseUrl: string
+  defaultSession?: string
+  model?: string
+  authority?: number
+  timeout?: number
 }
 
 export const Config: Schema<Config> = Schema.intersect([
@@ -34,6 +43,7 @@ export const Config: Schema<Config> = Schema.intersect([
     defaultSession: Schema.string().description('默认会话 ID'),
     model: Schema.string().description('覆盖默认模型 (格式: provider/model)'),
     timeout: Schema.number().default(30000).description('生成超时时间 (毫秒)'),
+    showReasoning: Schema.boolean().description('是否显示 agent 的推理过程').default(true),
   }).description('OpenCode 连接配置'),
   Schema.object({
     authority: Schema.number().default(1).description('使用命令所需权限等级'),
@@ -42,12 +52,160 @@ export const Config: Schema<Config> = Schema.intersect([
 
 const sessionCache = new Map<string, string>()
 
+interface SessionState {
+  sessionId: string
+  platform: string
+  userId: string
+  messageId: any
+  channelId: string
+  guildId?: string
+  selfId: string
+  opencodeMessageId?: string
+  lastActivity?: number
+  // cache for message parts: messageID -> { text?, reasoning? }
+  partialMessages?: Map<string, { text?: string; reasoning?: string }>
+  // track tool execution states: callID -> lastStatus
+  toolStates?: Map<string, string>
+}
+
+const activeSessions = new Map<string, SessionState>()
+const messageIdToSessionKey = new Map<string, string>()
+
+// refer: https://github.com/anomalyco/opencode/blob/dev/packages/sdk/js/src/gen/types.gen.ts
+function formatPart(part: any, showReasoning: boolean = true): string {
+  if (!part) return '未知类型'
+
+  switch (part.type) {
+    case 'text':
+      return part.text || ''
+
+    case 'reasoning':
+      if (showReasoning) {
+        return `🤔 思考: ${part.text || ''}`
+      }
+      return ''
+
+    case 'tool':
+      const status = part.state?.status
+      if (status === 'pending') return '' // Ignore pending
+
+      const tool = part.tool
+      const input = part.state?.input || {}
+      const output = part.state?.output
+      const metadata = part.state?.metadata || {}
+
+      let header = ''
+      if (status === 'completed') {
+        header = `✅ 工具 ${tool} 执行完成`
+      } else if (status === 'running') {
+        header = `🔧 执行工具: ${tool}`
+      } else {
+        header = `🔧 工具 ${tool} (${status})`
+      }
+
+      let content = ''
+
+      try {
+        // Customizable formatting based on tool name
+        if (tool === 'todowrite' && Array.isArray(input.todos)) {
+          content = '\n' + input.todos.map((t: any) => {
+            let mark = '[ ]'
+            if (t.status === 'completed') mark = '[x]'
+            else if (t.status === 'in_progress') mark = '[/]'
+            return `${mark} ${t.content}`
+          }).join('\n')
+        }
+        else if ((tool === 'edit' || tool === 'write' || tool === 'replace_file_content' || tool === 'multi_replace_file_content') && (input.filePath || input.TargetFile)) {
+          const file = input.filePath || input.TargetFile || metadata.filepath
+          if (file && !header.includes('(')) header += ` (${file})`
+
+          if (metadata.diff) {
+            content = `\n\`\`\`diff\n${metadata.diff}\n\`\`\``
+          }
+        }
+        else if (tool === 'bash' || tool === 'run_command') {
+          const cmd = input.command || input.CommandLine
+          if (cmd) header += `\n$ ${cmd}`
+
+          if (output) {
+            // Heuristic: if command implies diff or output looks like diff/code
+            const cmdStr = (cmd || '').trim().toLowerCase()
+            if (cmdStr.startsWith('diff') || cmdStr.startsWith('fc') || (typeof output === 'string' && output.includes('diff --git'))) {
+              content = `\n\`\`\`diff\n${output}\n\`\`\``
+            } else {
+              // Limit output length for other commands
+              const outStr = String(output)
+              content = `\n${outStr.length > 300 ? outStr.substring(0, 300) + '...' : outStr}`
+            }
+          }
+        }
+        // Fallback / Generic
+        else {
+          if (tool === 'webfetch' && input.url) header += ` (${input.url})`
+          else if (tool === 'read' && input.filePath) header += ` (${input.filePath})`
+          else if (tool === 'skill' && input.name) header += ` (${input.name})`
+
+          // If we haven't generated valid content yet, try to show something generic if not already in header
+          if (!content && !header.includes('(')) {
+            const keys = Object.keys(input)
+            if (keys.length === 1 && typeof input[keys[0]] === 'string') {
+              header += ` (${input[keys[0]]})`
+            } else if (keys.length > 0) {
+              const inputStr = JSON.stringify(input)
+              if (inputStr.length < 100) {
+                // Only append if short
+                header += ` ${inputStr}`
+              }
+            }
+          }
+        }
+      } catch (e) {
+        // Fallback if parsing fails
+      }
+
+      return header + content
+
+    case 'step-start':
+      return '' // Don't show step start to user
+
+    case 'step-finish':
+      if (part.success) {
+        return `✅ 完成步骤: ${part.title || ''}`
+      } else {
+        return `❌ 失败: ${part.title || ''}`
+      }
+
+    case 'agent':
+      return `🤖 子代理: ${part.name || '未命名'}`
+
+    case 'subtask':
+      return `� 子任务 (${part.agent}): ${part.description || part.prompt}`
+
+    case 'patch':
+      return `📦 补丁 (${part.hash}): ${part.files?.join(', ') || '无文件'}`
+
+    case 'retry':
+      const errorMsg = part.error?.data?.message || JSON.stringify(part.error) || ''
+      return `🔄 重试 (${part.attempt}次): ${errorMsg}`
+
+    case 'file':
+      return `� 文件: ${part.filename || part.url || '未知文件'}`
+
+    case 'snapshot':
+    case 'compaction':
+      return '' // Internal types, don't show to user
+
+    default:
+      return `📦 ${part.type}`
+  }
+}
+
 export function apply(ctx: Context, config: Config) {
   let client: any = null
   let healthClient: any = null
 
   ctx.logger.info(`OpenCode 插件正在初始化，连接至: ${config.baseUrl}`)
-
+  ctx.logger.info('showReasoning config:', config.showReasoning)
   const clientPromise = initializeClients(config).then(clients => {
     client = clients.main
     healthClient = clients.health
@@ -58,6 +216,10 @@ export function apply(ctx: Context, config: Config) {
     throw err
   })
 
+  // Event stream setup
+  clientPromise.then(() => {
+    setupEventStream(client, ctx, config)
+  })
 
 
   ctx.command('oc.models [keyword:text]', {
@@ -170,6 +332,8 @@ export function apply(ctx: Context, config: Config) {
     authority: config.authority || 1,
   })
     .action(async ({ session }, message) => {
+      const sessionKey = `${session.platform}-${session.userId}`
+
       try {
         const c = await ensureClient()
         const sessionId = getSessionId(session, config.defaultSession)
@@ -177,77 +341,98 @@ export function apply(ctx: Context, config: Config) {
 
         ctx.logger.info(`[${opencodeSession.id}] 发送消息: ${message.substring(0, 50)}...`)
 
+        const senderName = session.username || session.author?.name || session.userId
+        const contextHeader = `[User: ${senderName} (ID: ${session.userId}) | Platform: ${session.platform}]`
+        const fullMessage = `${contextHeader}\n${message}`
+
+        // Register session BEFORE prompt to avoid race conditions with incoming events
+        activeSessions.set(sessionKey, {
+          sessionId: opencodeSession.id,
+          platform: session.platform,
+          userId: session.userId,
+          messageId: session.id,
+          channelId: session.channelId,
+          guildId: session.guildId,
+          selfId: session.selfId,
+          lastActivity: Date.now(),
+          partialMessages: new Map(),
+          toolStates: new Map()
+        })
+        ctx.logger.info(`会话已添加到活跃追踪: ${sessionKey}`)
+
+        await session.send(`🔄 正在处理: ${message.substring(0, 30)}...`)
+
+        const result = await c.session.prompt({
+          path: { id: opencodeSession.id },
+          body: {
+            model: config.model ? parseModel(config.model) : undefined,
+            parts: [{ type: 'text', text: fullMessage }],
+          },
+        })
+
+        const targetMsgId = result.info?.id
+
+        if (targetMsgId) {
+          const state = activeSessions.get(sessionKey)
+          if (state) {
+            state.opencodeMessageId = targetMsgId
+            state.lastActivity = Date.now() // Reset timeout timer after prompt returns
+            activeSessions.set(sessionKey, state)
+            messageIdToSessionKey.set(targetMsgId, sessionKey)
+          }
+        } else {
+          // Even if no ID (shouldn't happen?), reset activity to give it a chance
+          const state = activeSessions.get(sessionKey)
+          if (state) {
+            state.lastActivity = Date.now()
+            activeSessions.set(sessionKey, state)
+          }
+        }
+
+        const timeout = config.timeout || 30000
+        const startTime = Date.now()
         let capturedError: any = null
-        let lastActivity = Date.now()
-        let currentStatus = 'idle'
 
         const removeListeners = [
           ctx.on('opencode/error', (sid, err) => {
             if (sid === opencodeSession.id) capturedError = err
           }),
           ctx.on('opencode/activity', (sid) => {
-            if (sid === opencodeSession.id) lastActivity = Date.now()
+            if (sid === opencodeSession.id) {
+              ctx.logger.info(`Session ${sid} activity detected`)
+            }
           }),
           ctx.on('opencode/status', (sid, status) => {
             if (sid === opencodeSession.id) {
-              currentStatus = status
-              lastActivity = Date.now()
+              ctx.logger.info(`Session ${sid} status: ${status}`)
             }
           })
         ]
 
         try {
-          // Construct message with context
-          const senderName = session.username || session.author?.name || session.userId
-          const contextHeader = `[User: ${senderName} (ID: ${session.userId}) | Platform: ${session.platform}]`
-          const fullMessage = `${contextHeader}\n${message}`
-
-          const result = await c.session.prompt({
-            path: { id: opencodeSession.id },
-            body: {
-              model: config.model ? parseModel(config.model) : undefined,
-              parts: [{ type: 'text', text: fullMessage }],
-            },
-          })
-
-          // Assume busy after prompt
-          lastActivity = Date.now()
-          currentStatus = 'busy'
-          const targetMsgId = result.info?.id
-
-          ctx.logger.info(`等待消息生成: ${targetMsgId} (超时: ${config.timeout || 30000}ms)`)
-
-          // Poll loop
-          const timeout = config.timeout || 30000
-
           while (true) {
             if (capturedError) break
 
+            const sessionState = activeSessions.get(sessionKey)
+            if (!sessionState) {
+              // Session removed means task completed
+              break
+            }
+
+            const lastActivity = sessionState.lastActivity || startTime
             if (Date.now() - lastActivity > timeout) {
-              ctx.logger.warn(`[${opencodeSession.id}] 响应生成超时`)
+              ctx.logger.warn(`[${opencodeSession.id}] 响应生成超时 (无活动 ${timeout}ms)`)
+              await session.send('⚠️ 响应生成超时')
               break
             }
 
-            await new Promise(resolve => setTimeout(resolve, 200))
-
-            // If idle and stable for 1s, we are done
-            if (currentStatus === 'idle' && Date.now() - lastActivity > 1000) {
-              break
-            }
+            await new Promise(resolve => setTimeout(resolve, 100))
           }
 
-          if (capturedError) {
-            const errData = capturedError.data as { message?: string } | undefined
-            const errMessage = errData?.message || capturedError.message || JSON.stringify(capturedError)
-            return `❌ ${errMessage}`
-          }
-
-          // Fetch final message content
           const { data: messages } = await c.session.messages({
             path: { id: opencodeSession.id }
           })
 
-          // Find our message by ID to ensure we have the latest parts
           let responseParts: any[] = []
 
           if (targetMsgId) {
@@ -255,11 +440,9 @@ export function apply(ctx: Context, config: Config) {
             if (found) {
               responseParts = found.parts || []
             } else {
-              // Fallback: use the last message if ID not found (unlikely)
               responseParts = messages[messages.length - 1]?.parts || []
             }
           } else {
-            // Fallback
             responseParts = messages[messages.length - 1]?.parts || []
           }
 
@@ -278,7 +461,7 @@ export function apply(ctx: Context, config: Config) {
             formattedResponse = '[无响应 - 可能是生成超时或需要更多时间]'
           }
 
-          return formattedResponse
+          await session.send(formattedResponse)
 
         } finally {
           removeListeners.forEach(off => off())
@@ -287,7 +470,16 @@ export function apply(ctx: Context, config: Config) {
       } catch (error) {
         const errorMsg = (error as Error).message || String(error)
         ctx.logger.error('OpenCode 错误:', errorMsg)
-        return h.text(`❌ OpenCode 错误: ${errorMsg}`)
+
+        // Cleanup on error
+        const sessionKey = `${session.platform}-${session.userId}`
+        const state = activeSessions.get(sessionKey)
+        if (state && state.opencodeMessageId) {
+          messageIdToSessionKey.delete(state.opencodeMessageId)
+        }
+        activeSessions.delete(sessionKey)
+
+        await session.send(`❌ OpenCode 错误: ${errorMsg}`)
       }
     })
 
@@ -398,7 +590,7 @@ export function apply(ctx: Context, config: Config) {
         const c = await ensureClient()
         await c.session.delete({ path: { id } })
 
-        for (const [key, value] of sessionCache.entries()) {
+        for (const [key, value] of Array.from(sessionCache.entries())) {
           if (value === id) {
             sessionCache.delete(key)
           }
@@ -503,7 +695,7 @@ export function apply(ctx: Context, config: Config) {
     })
 
   clientPromise.then(() => {
-    setupEventStream(client, ctx)
+    setupEventStream(client, ctx, config)
   })
 }
 
@@ -547,7 +739,7 @@ function parseModel(modelStr: string): { providerID: string; modelID: string } {
   return { providerID: parts[0], modelID: parts[1] }
 }
 
-async function setupEventStream(client: any, ctx: Context) {
+async function setupEventStream(client: any, ctx: Context, config: Config) {
   let isDisposed = false
   const dispose = ctx.on('dispose', () => {
     isDisposed = true
@@ -559,7 +751,7 @@ async function setupEventStream(client: any, ctx: Context) {
     for await (const event of events.stream) {
       if (isDisposed) break
 
-      // ctx.logger.debug('OpenCode 事件:', event.type, JSON.stringify(event.properties))
+      // ctx.logger.info('OpenCode 事件:', event.type, JSON.stringify(event.properties))
 
       switch (event.type) {
         case 'session.created':
@@ -573,50 +765,29 @@ async function setupEventStream(client: any, ctx: Context) {
           }
           break
         case 'session.updated':
-          ctx.logger.debug(`会话更新: ${event.properties.info?.id || 'unknown'}`)
+          ctx.logger.info(`会话更新: ${event.properties.info?.id || 'unknown'} event.properties: ${JSON.stringify(event.properties)}`)
           break
         case 'message.part.updated':
-          const partText = event.properties.part?.text ? ` 内容: ${event.properties.part.text.substring(0, 50)}...` : ''
-          ctx.logger.info(`消息生成中 [${event.type}]${partText}`)
-          const mpSessionId = event.properties.sessionID || event.properties.info?.session_id || event.properties.info?.sessionId
-          if (mpSessionId) ctx.emit('opencode/activity', mpSessionId)
+          await handlePartUpdated(ctx, event, config.showReasoning ?? true)
           break
         case 'message.updated':
-          ctx.logger.info(`消息更新 [${event.type}] ID: ${event.properties.info?.id}`)
-          const mSessionId = event.properties.sessionID || event.properties.info?.session_id || event.properties.info?.sessionId
-          if (mSessionId) ctx.emit('opencode/activity', mSessionId)
+          await handleMessageUpdated(ctx, event)
           break
         case 'session.status':
-          const statusType = event.properties.status?.type || 'unknown'
-          ctx.logger.info(`会话状态变更: ${statusType}`)
-          const sSessionId = event.properties.sessionID || event.properties.info?.id
-          if (sSessionId) {
-            ctx.emit('opencode/status', sSessionId, statusType)
-            ctx.emit('opencode/activity', sSessionId)
-          }
-          break
-        case 'session.diff':
-          // Diff events can be verbose, keep in debug
-          ctx.logger.debug(`会话差异更新 [${event.type}]`)
-          const dSessionId = event.properties.sessionID || event.properties.info?.id
-          if (dSessionId) ctx.emit('opencode/activity', dSessionId)
-          break
-        case 'session.idle':
-        case 'server.heartbeat':
-          ctx.logger.debug(`事件: ${event.type}`)
+          await handleSessionStatus(ctx, event)
           break
         case 'session.error':
-          const errData = event.properties.error?.data as { message?: string } | undefined
-          const errMessage = errData?.message || event.properties.error?.message || JSON.stringify(event.properties.error)
-          ctx.logger.warn(`会话错误: ${errMessage}`)
+          await handleSessionError(ctx, event)
+          break
+        case 'session.diff':
+          // Diff events are verbose, keep in debug
+          const diffSessionId = event.properties.sessionID || event.properties.info?.id
+          ctx.logger.info(`Session diff for: ${diffSessionId || 'unknown'}`)
+          break
+        case 'session.idle':
+          ctx.logger.info(`Session idle event`)
+          break
 
-          if (event.properties.sessionID) {
-            ctx.emit('opencode/error', event.properties.sessionID, event.properties.error)
-          }
-          break
-        case 'tui.toast.show':
-          ctx.logger.info(`Toast: ${event.properties.message}`)
-          break
         default:
           ctx.logger.info(`OpenCode 事件 [${event.type}]: ${JSON.stringify(event.properties)}`)
       }
@@ -628,4 +799,225 @@ async function setupEventStream(client: any, ctx: Context) {
   } finally {
     dispose()
   }
+}
+
+async function handlePartUpdated(ctx: Context, event: any, showReasoning: boolean) {
+  const part = event.properties.part
+
+  if (!part) {
+    ctx.logger.info(`Skipping part update - no part data in event: ${event.type}`)
+    return
+  }
+
+  // Try to find session key via multiple methods
+  // 1. Check for session ID in properties (some events have it)
+  // 2. Check for message ID in path (standard resource path) and lookup in map
+  if (part?.type !== 'text' && part?.type !== 'reasoning') {
+    ctx.logger.info(`Event properties: ${JSON.stringify(event.properties)}`)
+  }
+
+  let sessionId = event.properties.sessionID || event.properties.info?.session_id || event.properties.info?.sessionId || part?.sessionID
+  let messageId = event.path?.id || event.path?.messageId || part?.messageID
+
+  let sessionKey: string | undefined
+  let sessionState: SessionState | undefined
+
+  // Method 1: Lookup by Session ID
+  if (sessionId) {
+    for (const [key, state] of Array.from(activeSessions.entries())) {
+      if (state.sessionId === sessionId) {
+        sessionKey = key
+        sessionState = state
+        break
+      }
+    }
+  }
+
+  // Method 2: Lookup by Message ID
+  if (!sessionState && messageId) {
+    sessionKey = messageIdToSessionKey.get(messageId)
+    if (sessionKey) {
+      sessionState = activeSessions.get(sessionKey)
+    }
+  }
+
+  if (!sessionState) {
+    // Log debug info to help diagnose if still failing
+    ctx.logger.info(`No active session found for part update. IDs found: Session=${sessionId}, Message=${messageId}. Event keys: [${Object.keys(event).join(', ')}]`)
+    return
+  }
+
+  // Handle message buffering
+  if (messageId) {
+    if (!sessionState.partialMessages) {
+      sessionState.partialMessages = new Map()
+    }
+
+    let current = sessionState.partialMessages.get(messageId) || {}
+    let shouldSend = false
+    let finalContent = ''
+
+    if (part.type === 'text') {
+      current.text = part.text
+      sessionState.partialMessages.set(messageId, current)
+    } else if (part.type === 'reasoning') {
+      current.reasoning = part.text
+      sessionState.partialMessages.set(messageId, current)
+    } else if (part.type === 'step-finish') {
+      // Step finished, prepare to send
+      shouldSend = true
+
+      const parts: string[] = []
+      if (showReasoning && current.reasoning) {
+        parts.push(`🤔 思考: ${current.reasoning}`)
+      }
+
+      finalContent = parts.join('\n\n')
+
+      // Clear buffer for this message after sending?
+      // Or maybe keep it if we expect more updates? 
+      // Usually step-finish means this unit of work is done.
+      sessionState.partialMessages.delete(messageId)
+    } else if (part.type === 'tool') {
+      // Handle tool state tracking to avoid spam
+      const callId = part.callID || 'unknown'
+      const status = part.state?.status || 'unknown'
+
+      if (!sessionState.toolStates) {
+        sessionState.toolStates = new Map()
+      }
+
+      const lastStatus = sessionState.toolStates.get(callId)
+      if (lastStatus !== status) {
+        sessionState.toolStates.set(callId, status)
+
+        const toolMsg = formatPart(part, showReasoning)
+        if (toolMsg) {
+          shouldSend = true
+          finalContent = toolMsg
+        }
+      }
+    } else {
+      // For other types (tool_use, etc.), maybe just send immediately or ignore?
+      // Based on user request, we focus on text/step-finish flow.
+      // If it's a standalone event we might want to let it pass or buffer it too.
+      // For now, let's strictly follow the "buffer text, send on step-finish" logic for text/reasoning.
+
+      // If it is NOT text/reasoning, we might want to check if it needs handling.
+      // formatPart handles tool_use, etc. 
+      // If those don't emit 'step-finish', we might never send them if we only wait for step-finish.
+      // BUT, usually tool use comes with step-start/finish too?
+
+      // Let's use the standard formatPart for non-text/reasoning immediate updates if necessary,
+      // OR assume everything is wrapped in steps.
+
+      // Safe bet: if it's not text/reasoning/step-finish, send it immediately (legacy behavior)
+      // UNLESS it interacts with the buffer.
+
+      const legacyFormatted = formatPart(part, showReasoning)
+      if (legacyFormatted) {
+        // Check if we should send this immediately
+        if (part.type !== 'text' && part.type !== 'reasoning' && part.type !== 'step-finish') {
+          // Send immediately
+          shouldSend = true
+          finalContent = legacyFormatted
+        }
+      }
+    }
+
+    if (shouldSend && finalContent) {
+      const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
+      if (bot) {
+        bot.sendMessage(sessionState!.channelId, finalContent, sessionState!.guildId)
+      } else {
+        ctx.logger.warn(`Bot not found for session ${sessionKey}`)
+      }
+    }
+  } else {
+    // Fallback for events without messageId (unlikely for parts?)
+    // Just send properly formatted part
+    const formattedMessage = formatPart(part, showReasoning)
+    if (formattedMessage) {
+      const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
+      if (bot) {
+        bot.sendMessage(sessionState!.channelId, formattedMessage, sessionState!.guildId)
+      }
+    }
+  }
+
+  // Update last activity
+  sessionState.lastActivity = Date.now()
+  activeSessions.set(sessionKey!, sessionState)
+}
+
+
+async function handleSessionStatus(ctx: Context, event: any) {
+  const status = event.properties.status?.type || 'unknown'
+  const sessionId = event.properties.sessionID || event.properties.info?.id
+
+  let sessionKey: string | undefined
+  let sessionState: SessionState | undefined
+
+  for (const [key, state] of Array.from(activeSessions.entries())) {
+    if (state.sessionId === sessionId) {
+      sessionKey = key
+      sessionState = state
+      break
+    }
+  }
+
+  if (!sessionState) {
+    ctx.logger.warn(`No active session found for status update: ${sessionId} event.properties: ${JSON.stringify(event.properties)}`)
+    return
+  }
+
+  ctx.logger.info(`Session ${sessionId} ${status} now`)
+
+  if (status === 'idle') {
+    if (sessionState.opencodeMessageId) {
+      messageIdToSessionKey.delete(sessionState.opencodeMessageId)
+    }
+    activeSessions.delete(sessionKey)
+    ctx.logger.info(`Session ${sessionId} idle and removed from active tracking`)
+  } else {
+    ctx.logger.info(`Session ${sessionId} status: ${status} (not removing from tracking)`)
+  }
+}
+
+async function handleMessageUpdated(ctx: Context, event: any) {
+  ctx.logger.info(`Message updated: ${event.properties.info?.id}`)
+}
+
+async function handleSessionError(ctx: Context, event: any) {
+  const sessionId = event.properties.sessionID || event.properties.info?.id
+
+  let sessionKey: string | undefined
+  let sessionState: SessionState | undefined
+
+  for (const [key, state] of Array.from(activeSessions.entries())) {
+    if (state.sessionId === sessionId) {
+      sessionKey = key
+      sessionState = state
+      break
+    }
+  }
+
+  if (!sessionState) {
+    ctx.logger.warn(`No active session found for error: ${sessionKey}`)
+    return
+  }
+
+  const errData = event.properties.error
+  const errMessage = errData?.message || event.properties.error?.message || JSON.stringify(event.properties.error)
+
+  const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
+  if (bot) {
+    bot.sendMessage(sessionState!.channelId, `❌ 会话错误: ${errMessage}`, sessionState!.guildId)
+  }
+
+  if (sessionState.opencodeMessageId) {
+    messageIdToSessionKey.delete(sessionState.opencodeMessageId)
+  }
+  activeSessions.delete(sessionKey)
+  ctx.logger.error(`Session ${sessionId} error: ${errMessage} - removing from active tracking`)
 }
