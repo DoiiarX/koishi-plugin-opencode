@@ -5,6 +5,26 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/) 规范。
 
+## [0.0.5] - 2026-01-28
+
+### 新增
+- `CHANGELOG.md` 和 `CHANGELOG.zh-CN.md` 包含完整的版本历史
+- `ARCHITECTURE.md` 架构文档
+- `docs/SDK_TYPES.md` SDK 类型定义文档
+- `README.md` 中的平台支持章节
+
+### 变更
+- 更新 `AGENTS.md` 以引用更新日志和 SDK 类型文档
+- 重构 `src/index.ts` 以支持更好的消息部分解析和格式化
+- 版本升级至 0.0.5（跳过 0.0.4）
+
+### 修复
+- 修复 `src/index.ts` 中重复的 `Config` 接口声明
+- 修复 `handleSessionError` 中 `sessionKey` 未定义的日志错误
+- 改进 `agent`, `subtask`, `patch` 等消息部分的日志格式化
+- 移除不符合 SDK 定义的 `part.goal` 和 `part.reason` 属性引用
+- 移除 `README.md` 命令中错误的前导点
+
 ## [0.0.3] - 2026-01-26
 
 ### 新增

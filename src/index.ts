@@ -29,13 +29,7 @@ export interface Config {
   showReasoning?: boolean
 }
 
-export interface Config {
-  baseUrl: string
-  defaultSession?: string
-  model?: string
-  authority?: number
-  timeout?: number
-}
+
 
 export const Config: Schema<Config> = Schema.intersect([
   Schema.object({
@@ -1003,7 +997,7 @@ async function handleSessionError(ctx: Context, event: any) {
   }
 
   if (!sessionState) {
-    ctx.logger.warn(`No active session found for error: ${sessionKey}`)
+    ctx.logger.warn(`No active session found for error: ${sessionId}`)
     return
   }
 

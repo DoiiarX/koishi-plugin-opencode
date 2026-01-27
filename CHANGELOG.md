@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.5] - 2026-01-28
+
+### Added
+- `CHANGELOG.md` and `CHANGELOG.zh-CN.md` with complete version history
+- `ARCHITECTURE.md` documentation
+- `docs/SDK_TYPES.md` with SDK type definitions
+- Platform support section in `README.md`
+
+### Changed
+- Updated `AGENTS.md` to reference changelog and SDK types
+- Refactored `src/index.ts` to support better message part parsing and formatting
+- Bumped version to 0.0.5 (skipping 0.0.4)
+
+### Fixed
+- Fixed duplicate `Config` interface declaration in `src/index.ts`
+- Fixed logging error where `sessionKey` was undefined in `handleSessionError`
+- Improved log formatting for `agent`, `subtask`, and `patch` parts
+- Removed incorrect usage of `part.goal` and `part.reason` to align with SDK types
+- Removed leading dot from commands in `README.md`
+
+
 ## [0.0.3] - 2026-01-26
 
 ### Added
