@@ -158,6 +158,26 @@ oc.sdel <id>
 ```
 Delete a specific session.
 
+#### View Message History
+```
+oc.session.messages [page]
+```
+View user message history with pagination.
+
+### Others
+
+#### List Agents
+```
+oc.agents
+```
+List all available AI agents.
+
+#### Check Streaming Status
+```
+oc.stream.status
+```
+Check current streaming output status and adapter compatibility.
+
 ## Permissions
 
 Different commands have different default authority levels:
@@ -165,8 +185,11 @@ Different commands have different default authority levels:
 | Command Group | Authority Level |
 |---------------|-----------------|
 | Basic Commands | 1 |
-| Session Info | 1 |
+| View Session Info | 1 |
+| View Message History | 1 |
 | List Models | 1 |
+| List Agents | 1 |
+| Check Streaming Status | 1 |
 | Switch Session | 2 |
 | Set Model | 3 |
 | List Sessions | 3 |
