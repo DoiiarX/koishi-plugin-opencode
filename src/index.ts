@@ -32,6 +32,7 @@ export interface Config {
   streamInterval?: number
   showToolMessages?: boolean
   showProcessingMessage?: boolean
+  directory?: string
 }
 
 
@@ -48,6 +49,7 @@ export const Config: Schema<Config> = Schema.intersect([
     streamMode: Schema.union(['auto', 'native', 'segment']).description('流式输出模式 (auto: 自动检测, native: 编辑消息, segment: 分段发送)').default('auto'),
     streamInterval: Schema.number().description('流式更新间隔 (毫秒)').default(500),
     showProcessingMessage: Schema.boolean().description('是否显示 "正在处理" 提示消息').default(true),
+    directory: Schema.string().description('默认工作区目录 (可选)'),
   }).description('OpenCode 连接配置'),
   Schema.object({
     authority: Schema.number().default(1).description('使用命令所需权限等级'),
@@ -55,6 +57,17 @@ export const Config: Schema<Config> = Schema.intersect([
 ])
 
 const sessionCache = new Map<string, string>()
+
+// Simple string hash for directory fingerprinting
+function simpleHash(str: string): string {
+  let hash = 0
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i)
+    hash = ((hash << 5) - hash) + char
+    hash = hash & hash // Convert to 32bit integer
+  }
+  return Math.abs(hash).toString(36)
+}
 
 interface SessionState {
   sessionId: string
@@ -356,7 +369,7 @@ export function apply(ctx: Context, config: Config) {
       try {
         const opencodeClient = await ensureClient()
         // const sessionId = getSessionId(chatbotSession, config.defaultSession) // No longer needed
-        const opencodeSession = await getOrCreateSession(opencodeClient, chatbotSession)
+        const opencodeSession = await getOrCreateSession(opencodeClient, chatbotSession, config)
 
         ctx.logger.info(`[${opencodeSession.id}] 发送消息: ${message.substring(0, 50)}...`)
 
@@ -540,7 +553,9 @@ export function apply(ctx: Context, config: Config) {
         ctx.logger.error('OpenCode 错误:', errorMsg)
 
         // Cleanup on error
-        const sessionKey = `${chatbotSession.platform}-${chatbotSession.userId}`
+        const directory = config.directory || 'default'
+        const dirHash = simpleHash(directory)
+        const sessionKey = `${chatbotSession.platform}-${chatbotSession.userId}-${dirHash}`
         const state = activeSessions.get(sessionKey)
         if (state && state.opencodeMessageId) {
           messageIdToSessionKey.delete(state.opencodeMessageId)
@@ -577,22 +592,27 @@ export function apply(ctx: Context, config: Config) {
     })
 
   ctx.command('oc.session.new', {
-    authority: config.authority || 3,
+    authority: config.authority || 1,
   })
     .alias('oc.sn')
     .action(async ({ session: chatbotSession }) => {
       try {
         const opencodeClient = await ensureClient()
+        const directory = config.directory || 'default'
+        const dirHash = simpleHash(directory)
         const { data: newSession } = await opencodeClient.session.create({
           body: {
-            title: `Koishi-${chatbotSession.platform}-${chatbotSession.userId}-${Date.now()}`,
+            title: `Koishi-${chatbotSession.platform}-${chatbotSession.userId}-${dirHash}-${Date.now()}`,
+          },
+          query: {
+            directory: config.directory,
           },
         })
 
-        const sessionKey = `${chatbotSession.platform}-${chatbotSession.userId}`
+        const sessionKey = `${chatbotSession.platform}-${chatbotSession.userId}-${dirHash}`
         sessionCache.set(sessionKey, newSession.id)
 
-        return `✅ 已创建会话: ${newSession.id}\n📝 标题: ${newSession.title}`
+        return `✅ 已创建会话: ${newSession.id}\n📝 标题: ${newSession.title}\n📂 目录: ${directory}`
 
       } catch (error) {
         ctx.logger.error('创建会话失败:', error)
@@ -614,7 +634,9 @@ export function apply(ctx: Context, config: Config) {
           return `❌ 会话 ${id} 不存在`
         }
 
-        const sessionKey = `${chatbotSession.platform}-${chatbotSession.userId}`
+        const directory = config.directory || 'default'
+        const dirHash = simpleHash(directory)
+        const sessionKey = `${chatbotSession.platform}-${chatbotSession.userId}-${dirHash}`
         sessionCache.set(sessionKey, id)
 
         return `✅ 已切换到会话: ${id}\n📝 标题: ${targetSession.title}`
@@ -633,7 +655,7 @@ export function apply(ctx: Context, config: Config) {
       try {
         const opencodeClient = await ensureClient()
         // const sessionId = getSessionId(chatbotSession, config.defaultSession)
-        const opencodeSession = await getOrCreateSession(opencodeClient, chatbotSession)
+        const opencodeSession = await getOrCreateSession(opencodeClient, chatbotSession, config)
 
         return `📌 当前会话信息:\n` +
           `ID: ${opencodeSession.id}\n` +
@@ -751,7 +773,7 @@ export function apply(ctx: Context, config: Config) {
     .action(async ({ session: chatbotSession }, page) => {
       try {
         const opencodeClient = await ensureClient()
-        const opencodeSession = await getOrCreateSession(opencodeClient, chatbotSession)
+        const opencodeSession = await getOrCreateSession(opencodeClient, chatbotSession, config)
 
         const { data: messages } = await opencodeClient.session.messages({
           path: { id: opencodeSession.id }
@@ -809,7 +831,8 @@ export function apply(ctx: Context, config: Config) {
 
 async function getOrCreateSession(
   client: any,
-  chatbotSession: any
+  chatbotSession: any,
+  config: Config,
 ): Promise<any> {
   const sessionKey = `${chatbotSession.platform}-${chatbotSession.userId}`
   const cachedId = sessionCache.get(sessionKey)
@@ -867,6 +890,9 @@ async function getOrCreateSession(
   const result = await client.session.create({
     body: {
       title: newTitle,
+    },
+    query: {
+      directory: config.directory,
     },
   })
 

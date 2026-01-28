@@ -66,6 +66,7 @@ plugins:
 | `streamInterval` | `number` | `500` | Streaming update interval (ms) |
 | `showToolMessages` | `boolean` | `true` | Show tool execution messages |
 | `showProcessingMessage` | `boolean` | `true` | Show "Processing" notification |
+| `directory` | `string` | - | Default workspace directory |
 
 ## Commands
 
@@ -169,7 +170,7 @@ Different commands have different default authority levels:
 | Switch Session | 2 |
 | Set Model | 3 |
 | List Sessions | 3 |
-| Create Session | 3 |
+| Create Session | 1 |
 | Delete Session | 4 |
 
 ## Requirements
