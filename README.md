@@ -45,7 +45,7 @@ plugins:
 
 ### ✨ Features
 
-- **🤖 Multi-modal Support**: Send images, audio, video, and files using standard Koishi tags (e.g., `<img src="...">`).
+- **🤖 Multi-modal Support**: Send images, audio, video, and files using standard Koishi tags (e.g., `<img src="...">`, see [Koishi Elements](https://koishi.chat/zh-CN/guide/basic/element.html)).
 - **🔄 Session Recovery**: Automatically recovers sessions based on Title (`Koishi-<platform>-<userId>`) across restarts.
 - **🌊 Smart Streaming**: Supports native message editing and segmented streaming with tag integrity protection.
 - **🛠️ Powerful Plugins**: Access to the full OpenCode tool and agent ecosystem.

@@ -45,7 +45,7 @@ plugins:
 
 ### ✨ 核心特性
 
-- **🤖 智能多模态**：支持文本对话，更支持通过标准 Koishi 标签（`<img src="...">`, `<audio>`, `<video>`, `<file>`）直接发送媒体文件。
+- **🤖 智能多模态**：支持文本对话，更支持通过标准 Koishi 标签（`<img src="...">`, `<audio>`, `<video>`, `<file>`）直接发送媒体文件（参考 [Koishi 元素文档](https://koishi.chat/zh-CN/guide/basic/element.html)）。
 - **🔄 会话自动恢复**：基于 Title（`Koishi-<platform>-<userId>`）自动锚定历史会话，服务重启不丢失上下文。
 - **🌊 智能流式输出**：支持原生编辑 (`editMessage`) 和分段发送两种模式，打字机效果更流畅，且具备 HTML 标签完整性保护。
 - **🛠️ 强大的插件系统**：支持接入各类基于 OpenCode 协议的工具与 Agent。
