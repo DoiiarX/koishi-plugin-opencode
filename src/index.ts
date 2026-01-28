@@ -847,9 +847,7 @@ export function apply(ctx: Context, config: Config) {
       }
     })
 
-  clientPromise.then(() => {
-    setupEventStream(client, ctx, config)
-  })
+
 }
 
 // function getSessionId(session: any, defaultId?: string): string {
@@ -947,66 +945,70 @@ function parseModel(modelStr: string): { providerID: string; modelID: string } {
   return { providerID: parts[0], modelID: parts[1] }
 }
 
+let isSubscribed = false
+
 async function setupEventStream(client: any, ctx: Context, config: Config) {
-  let isDisposed = false
-  const dispose = ctx.on('dispose', () => {
-    isDisposed = true
+  if (isSubscribed) return
+  isSubscribed = true
+
+  ctx.on('dispose', () => {
+    isSubscribed = false
   })
 
-  try {
-    const events = await client.event.subscribe()
+  while (isSubscribed) {
+    try {
+      ctx.logger.info('正在启用 OpenCode 事件流订阅...')
+      const events = await client.event.subscribe()
 
-    for await (const event of events.stream) {
-      if (isDisposed) break
+      for await (const event of events.stream) {
+        if (!isSubscribed) break
 
-      // ctx.logger.info('OpenCode 事件:', event.type, JSON.stringify(event.properties))
+        switch (event.type) {
+          case 'session.created':
+            if (event.properties.info?.id) {
+              ctx.logger.info(`会话创建: ${event.properties.info.id}`)
+            }
+            break
+          case 'session.deleted':
+            if (event.properties.info?.id) {
+              ctx.logger.info(`会话删除: ${event.properties.info.id}`)
+            }
+            break
+          case 'session.updated':
+            break
+          case 'message.part.updated':
+            await handlePartUpdated(ctx, event, config)
+            break
+          case 'message.updated':
+            await handleMessageUpdated(ctx, event)
+            break
+          case 'session.status':
+            await handleSessionStatus(ctx, event)
+            break
+          case 'session.error':
+            await handleSessionError(ctx, event)
+            break
+          case 'session.diff':
+            const diffSessionId = event.properties.sessionID || event.properties.info?.id
+            ctx.logger.debug(`Session diff for: ${diffSessionId || 'unknown'}`)
+            break
+          case 'session.idle':
+            ctx.logger.debug(`Session idle event`)
+            break
 
-      switch (event.type) {
-        case 'session.created':
-          if (event.properties.info?.id) {
-            ctx.logger.info(`会话创建: ${event.properties.info.id}`)
-          }
-          break
-        case 'session.deleted':
-          if (event.properties.info?.id) {
-            ctx.logger.info(`会话删除: ${event.properties.info.id}`)
-          }
-          break
-        case 'session.updated':
-          ctx.logger.info(`会话更新: ${event.properties.info?.id || 'unknown'} event.properties: ${JSON.stringify(event.properties)}`)
-          break
-        case 'message.part.updated':
-          await handlePartUpdated(ctx, event, config)
-          break
-        case 'message.updated':
-          await handleMessageUpdated(ctx, event)
-          break
-        case 'session.status':
-          await handleSessionStatus(ctx, event)
-          break
-        case 'session.error':
-          await handleSessionError(ctx, event)
-          break
-        case 'session.diff':
-          // Diff events are verbose, keep in debug
-          const diffSessionId = event.properties.sessionID || event.properties.info?.id
-          ctx.logger.info(`Session diff for: ${diffSessionId || 'unknown'}`)
-          break
-        case 'session.idle':
-          ctx.logger.info(`Session idle event`)
-          break
-
-        default:
-          ctx.logger.info(`OpenCode 事件 [${event.type}]: ${JSON.stringify(event.properties)}`)
+          default:
+            ctx.logger.debug(`OpenCode 事件 [${event.type}]: ${JSON.stringify(event.properties)}`)
+        }
+      }
+    } catch (error) {
+      if (isSubscribed) {
+        ctx.logger.warn('OpenCode 事件流连接中断，5秒后尝试重连...', error)
+        await new Promise(resolve => setTimeout(resolve, 5000))
       }
     }
-  } catch (error) {
-    if (!isDisposed) {
-      ctx.logger.warn('事件流监听中断:', error)
-    }
-  } finally {
-    dispose()
   }
+
+  ctx.logger.info('OpenCode 事件流订阅已停止')
 }
 
 async function handlePartUpdated(ctx: Context, event: any, config: Config) {

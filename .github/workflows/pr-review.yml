@@ -60,7 +60,7 @@ jobs:
           prompt: |
             审查这个 Pull Request 的代码变更。
             
-            你没有提交PR的权限，你需要做的只是审查代码，并用gh api创建评论。
+            你没有提交PR的权限，你需要做的只是审查代码，并用gh api创建评论。回复完消息后，结束对话。
 
             <pr-title>
             ${{ steps.pr-details.outputs.title }}
@@ -151,3 +151,6 @@ jobs:
             - 不创建新的提交或分支
             - 不更新 PR 内容
             - 只添加 PR review comments
+            
+            回复完消息后，立即结束对话。不要进行PR或者commit。
+
