@@ -847,9 +847,7 @@ export function apply(ctx: Context, config: Config) {
       }
     })
 
-  clientPromise.then(() => {
-    setupEventStream(client, ctx, config)
-  })
+
 }
 
 // function getSessionId(session: any, defaultId?: string): string {
@@ -947,7 +945,12 @@ function parseModel(modelStr: string): { providerID: string; modelID: string } {
   return { providerID: parts[0], modelID: parts[1] }
 }
 
+let isSubscribed = false
+
 async function setupEventStream(client: any, ctx: Context, config: Config) {
+  if (isSubscribed) return
+  isSubscribed = true
+
   let isDisposed = false
   const dispose = ctx.on('dispose', () => {
     isDisposed = true
@@ -1005,6 +1008,7 @@ async function setupEventStream(client: any, ctx: Context, config: Config) {
       ctx.logger.warn('事件流监听中断:', error)
     }
   } finally {
+    isSubscribed = false
     dispose()
   }
 }
