@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-01-28
+
+### Added
+- **Multi-modal Support**: Enable sending images, audio, video, and files using Koishi element tags (`<img>`, `<audio>`, `<video>`, `<file>`). Agents can generate these tags via system prompt instructions.
+- **Directory-Based Session Isolation**: New `directory` configuration option. Changing the workspace directory now automatically creates a new isolated session, ensuring context separation between different workspaces (Title includes directory hash).
+- **Configuration**: Added `directory` option to specify the remote workspace directory.
+
+### Fixed
+- **Security Fix**: Prevented `config.authority` default value (1) from overriding higher permission requirements for sensitive commands (e.g., Delete Session, Set Model). Sensitive commands now enforce stricter permission levels (2-4).
+- **Command Documentation**: Comprehensive help documentation (descriptions, usage, examples) added for all `oc` commands (viewable via `help oc`, `help oc.models`, etc.).
+- **Permissions**: Lowered `oc.session.new` permission level to 1 to allow standard users to reset sessions manually under the isolation strategy.
+
 ## [0.0.6] - 2026-01-28
 
 ### Added

@@ -43,19 +43,30 @@ plugins:
     authority: 1
 ```
 
+### ✨ Features
+
+- **🤖 Multi-modal Support**: Send images, audio, video, and files using standard Koishi tags (e.g., `<img src="...">`, see [Koishi Elements](https://koishi.chat/zh-CN/guide/basic/element.html)).
+- **🔄 Session Recovery**: Automatically recovers sessions based on Title (`Koishi-<platform>-<userId>`) across restarts.
+- **🌊 Smart Streaming**: Supports native message editing and segmented streaming with tag integrity protection.
+- **🛠️ Powerful Plugins**: Access to the full OpenCode tool and agent ecosystem.
+- **🔍 Reasoning Display**: Show Chain of Thought (CoT) processes transparently.
+
 ### Configuration Options
 
 | Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `baseUrl` | string | `http://localhost:4096` | OpenCode Server address |
-| `defaultSession` | string | - | Default session ID for all users |
-| `model` | string | - | Override default model (format: `provider/model`) |
-| `timeout` | number | `30000` | Message generation timeout in milliseconds |
-| `authority` | number | `1` | Required permission level for commands |
-| `enableStreaming` | boolean | `true` | Enable streaming output |
-| `streamMode` | string | `auto` | Streaming mode (`auto`/`native`/`segment`) |
-| `streamInterval` | number | `500` | Streaming update interval (ms) |
-| `showToolMessages` | boolean | `true` | Show tool execution messages |
+| :--- | :--- | :--- | :--- |
+| `baseUrl` | `string` | `http://localhost:4096` | OpenCode Server address |
+| `defaultSession` | `string` | - | Default session ID for all users |
+| `model` | `string` | - | Override default model (format: `provider/model`) |
+| `timeout` | `number` | `30000` | Message generation timeout in milliseconds |
+| `authority` | `number` | `1` | Required permission level for commands |
+| `showReasoning` | `boolean` | `true` | Show `<think>` block content |
+| `enableStreaming` | `boolean` | `true` | Enable streaming output |
+| `streamMode` | `auto` \| `native` \| `segment` | `auto` | Streaming mode (`auto`/`native`/`segment`) |
+| `streamInterval` | `number` | `500` | Streaming update interval (ms) |
+| `showToolMessages` | `boolean` | `true` | Show tool execution messages |
+| `showProcessingMessage` | `boolean` | `true` | Show "Processing" notification |
+| `directory` | `string` | - | Default workspace directory |
 
 ## Commands
 
@@ -63,9 +74,9 @@ plugins:
 
 #### Send Message
 ```
-oc <message>
+oc [message]
 ```
-Send a message to OpenCode and receive a response.
+Send a message to OpenCode and receive a response. Supports variadic text input.
 
 **Example:**
 ```
@@ -82,17 +93,6 @@ Check the health status of your OpenCode Server.
 **Example:**
 ```
 oc.h
-```
-
-#### Check Stream Status
-```
-oc.stream.status
-```
-Check current streaming status, mode, and update interval.
-
-**Example:**
-```
-oc.stream.status
 ```
 
 ### Model Management
@@ -156,6 +156,28 @@ View information about the current session.
 oc.session.delete <id>
 oc.sdel <id>
 ```
+Delete a specific session.
+
+#### View Message History
+```
+oc.session.messages [page]
+```
+View user message history with pagination.
+
+### Others
+
+#### List Agents
+```
+oc.agents
+```
+List all available AI agents.
+
+#### Check Streaming Status
+```
+oc.stream.status
+```
+Check current streaming output status and adapter compatibility.
+
 ## Permissions
 
 Different commands have different default authority levels:
@@ -163,12 +185,15 @@ Different commands have different default authority levels:
 | Command Group | Authority Level |
 |---------------|-----------------|
 | Basic Commands | 1 |
-| Session Info | 1 |
+| View Session Info | 1 |
+| View Message History | 1 |
 | List Models | 1 |
+| List Agents | 1 |
+| Check Streaming Status | 1 |
 | Switch Session | 2 |
 | Set Model | 3 |
 | List Sessions | 3 |
-| Create Session | 3 |
+| Create Session | 1 |
 | Delete Session | 4 |
 
 ## Requirements

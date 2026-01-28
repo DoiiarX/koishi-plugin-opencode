@@ -31,6 +31,8 @@ export interface Config {
   streamMode?: 'auto' | 'native' | 'segment'
   streamInterval?: number
   showToolMessages?: boolean
+  showProcessingMessage?: boolean
+  directory?: string
 }
 
 
@@ -46,6 +48,8 @@ export const Config: Schema<Config> = Schema.intersect([
     enableStreaming: Schema.boolean().description('是否开启流式输出').default(true),
     streamMode: Schema.union(['auto', 'native', 'segment']).description('流式输出模式 (auto: 自动检测, native: 编辑消息, segment: 分段发送)').default('auto'),
     streamInterval: Schema.number().description('流式更新间隔 (毫秒)').default(500),
+    showProcessingMessage: Schema.boolean().description('是否显示 "正在处理" 提示消息').default(true),
+    directory: Schema.string().description('默认工作区目录 (可选)'),
   }).description('OpenCode 连接配置'),
   Schema.object({
     authority: Schema.number().default(1).description('使用命令所需权限等级'),
@@ -53,6 +57,17 @@ export const Config: Schema<Config> = Schema.intersect([
 ])
 
 const sessionCache = new Map<string, string>()
+
+// Simple string hash for directory fingerprinting
+function simpleHash(str: string): string {
+  let hash = 0
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i)
+    hash = ((hash << 5) - hash) + char
+    hash = hash & hash // Convert to 32bit integer
+  }
+  return Math.abs(hash).toString(36)
+}
 
 interface SessionState {
   sessionId: string
@@ -237,14 +252,16 @@ export function apply(ctx: Context, config: Config) {
   })
 
 
-  ctx.command('oc.models [keyword:text]', {
-    authority: config.authority || 1,
+  ctx.command('oc.models [keyword:text]', '列出可用模型', {
+    authority: 1,
   })
     .alias('oc.m')
+    .usage('列出 OpenCode 服务器支持的所有模型。可以使用关键词过滤。')
+    .example('oc.models claude  列出所有包含 claude 的模型')
     .action(async (_, keyword) => {
       try {
-        const c = await ensureClient()
-        const { data } = await c.config.providers()
+        const opencodeClient = await ensureClient()
+        const { data } = await opencodeClient.config.providers()
         const providerList: string[] = []
 
         if (data.providers) {
@@ -278,11 +295,13 @@ export function apply(ctx: Context, config: Config) {
       }
     })
 
-  ctx.command('oc.model.set <model:string>', {
-    authority: config.authority || 3,
+  ctx.command('oc.model.set <model:string>', '设置默认模型', {
+    authority: 3,
   })
     .alias('oc.ms')
-    .action(async ({ session }, model) => {
+    .usage('为当前环境设置默认使用的模型。此设置会影响后续的新会话。')
+    .example('oc.ms anthropic/claude-3-5-sonnet  设置为 Claude 3.5 Sonnet')
+    .action(async ({ session: chatbotSession }, model) => {
       try {
         if (!model) return '❌ 请提供模型 ID (例如: anthropic/claude-3-5-sonnet)'
 
@@ -292,8 +311,8 @@ export function apply(ctx: Context, config: Config) {
         }
 
         // Verify validity (optional, but good UX)
-        const c = await ensureClient()
-        const { data } = await c.config.providers()
+        const opencodeClient = await ensureClient()
+        const { data } = await opencodeClient.config.providers()
         let isValid = false
 
         if (data.providers) {
@@ -343,45 +362,78 @@ export function apply(ctx: Context, config: Config) {
     return healthClient
   }
 
-  ctx.command('oc <message:text>', {
-    authority: config.authority || 1,
-  })
-    .action(async ({ session }, message) => {
-      const sessionKey = `${session.platform}-${session.userId}`
+  ctx.command('oc [...message]', '与 AI 对话')
+    .usage('发送消息给 AI 并获取回复。支持上下文记忆和流式输出。')
+    .example('oc 你好  发送"你好"')
+    .example('oc 给我画一只猫  请求生成图片 (需配置 image 工具)')
+    .action(async ({ session: chatbotSession }, ...messageParts) => {
+      const message = messageParts.join(' ')
+      if (!message.trim()) return // Ignore empty messages
+      const directory = config.directory || 'default'
+      const dirHash = simpleHash(directory)
+      const sessionKey = `${chatbotSession.platform}-${chatbotSession.userId}-${dirHash}`
 
       try {
-        const c = await ensureClient()
-        const sessionId = getSessionId(session, config.defaultSession)
-        const opencodeSession = await getOrCreateSession(c, sessionId)
+        const opencodeClient = await ensureClient()
+        // const sessionId = getSessionId(chatbotSession, config.defaultSession) // No longer needed
+        const opencodeSession = await getOrCreateSession(opencodeClient, chatbotSession, config)
 
         ctx.logger.info(`[${opencodeSession.id}] 发送消息: ${message.substring(0, 50)}...`)
 
-        const senderName = session.username || session.author?.name || session.userId
-        const contextHeader = `[User: ${senderName} (ID: ${session.userId}) | Platform: ${session.platform}]`
-        const fullMessage = `${contextHeader}\n${message}`
+        const senderName = chatbotSession.username || chatbotSession.author?.name || chatbotSession.userId
+        const contextHeader = `[User: ${senderName} (ID: ${chatbotSession.userId}) | Platform: ${chatbotSession.platform}]`
 
         // Register session BEFORE prompt to avoid race conditions with incoming events
         activeSessions.set(sessionKey, {
           sessionId: opencodeSession.id,
-          platform: session.platform,
-          userId: session.userId,
-          messageId: session.id,
-          channelId: session.channelId,
-          guildId: session.guildId,
-          selfId: session.selfId,
+          platform: chatbotSession.platform,
+          userId: chatbotSession.userId,
+          messageId: chatbotSession.id,
+          channelId: chatbotSession.channelId,
+          guildId: chatbotSession.guildId,
+          selfId: chatbotSession.selfId,
           lastActivity: Date.now(),
           partialMessages: new Map(),
           toolStates: new Map()
         })
         ctx.logger.info(`会话已添加到活跃追踪: ${sessionKey}`)
 
-        await session.send(`🔄 正在处理: ${message.substring(0, 30)}...`)
+        if (config.showProcessingMessage ?? true) {
+          await chatbotSession.send(`🔄 正在处理: ${message.substring(0, 30)}...`)
+        }
 
-        const result = await c.session.prompt({
+        const systemInstructions = [
+          "如果需要发送媒体文件，在回复中包含标准的 Koishi 元素标签即可自动在用户端渲染对应内容。",
+          "图片: <img src='...'/>",
+          "音频: <audio src='...'/>",
+          "视频: <video src='...'/>",
+          "通用文件: <file src='...'/>",
+          "请勿对这些标签使用 Markdown 代码块包裹。如果只是发送任务，你不需要读取文件。只需要检查文件是否存在。"
+        ].join('\n')
+
+        // Inject system instructions (no reply)
+        await opencodeClient.session.prompt({
+          path: { id: opencodeSession.id },
+          body: {
+            noReply: true,
+            parts: [{ type: 'text', text: systemInstructions }],
+          },
+        })
+
+        // Inject user context (no reply)
+        await opencodeClient.session.prompt({
+          path: { id: opencodeSession.id },
+          body: {
+            noReply: true,
+            parts: [{ type: 'text', text: contextHeader }],
+          },
+        })
+
+        const result = await opencodeClient.session.prompt({
           path: { id: opencodeSession.id },
           body: {
             model: config.model ? parseModel(config.model) : undefined,
-            parts: [{ type: 'text', text: fullMessage }],
+            parts: [{ type: 'text', text: message }],
           },
         })
 
@@ -446,7 +498,7 @@ export function apply(ctx: Context, config: Config) {
             const lastActivity = sessionState.lastActivity || startTime
             if (Date.now() - lastActivity > timeout) {
               ctx.logger.warn(`[${opencodeSession.id}] 响应生成超时 (无活动 ${timeout}ms)`)
-              await session.send('⚠️ 响应生成超时')
+              await chatbotSession.send('⚠️ 响应生成超时')
               capturedError = true // Avoid sending partial result
               break
             }
@@ -460,7 +512,7 @@ export function apply(ctx: Context, config: Config) {
 
           if (!capturedError && !hasStreamed) {
             // Only fetch and send if we haven't streamed anything and no error occurred
-            const { data: messages } = await c.session.messages({
+            const { data: messages } = await opencodeClient.session.messages({
               path: { id: opencodeSession.id }
             })
 
@@ -489,7 +541,7 @@ export function apply(ctx: Context, config: Config) {
               formattedResponse = '[无响应 - 可能是生成超时或需要更多时间]'
             }
 
-            await session.send(formattedResponse)
+            await chatbotSession.send(h.parse(formattedResponse))
           }
 
         } finally {
@@ -508,25 +560,28 @@ export function apply(ctx: Context, config: Config) {
         ctx.logger.error('OpenCode 错误:', errorMsg)
 
         // Cleanup on error
-        const sessionKey = `${session.platform}-${session.userId}`
+        const directory = config.directory || 'default'
+        const dirHash = simpleHash(directory)
+        const sessionKey = `${chatbotSession.platform}-${chatbotSession.userId}-${dirHash}`
         const state = activeSessions.get(sessionKey)
         if (state && state.opencodeMessageId) {
           messageIdToSessionKey.delete(state.opencodeMessageId)
         }
         activeSessions.delete(sessionKey)
 
-        await session.send(`❌ OpenCode 错误: ${errorMsg}`)
+        await chatbotSession.send(`❌ OpenCode 错误: ${errorMsg}`)
       }
     })
 
-  ctx.command('oc.session.list', {
-    authority: config.authority || 3,
+  ctx.command('oc.session.list', '列出活跃会话', {
+    authority: 3,
   })
     .alias('oc.sl')
+    .usage('显示当前 OpenCode 服务中所有的会话列表。')
     .action(async () => {
       try {
-        const c = await ensureClient()
-        const { data: sessions } = await c.session.list()
+        const opencodeClient = await ensureClient()
+        const { data: sessions } = await opencodeClient.session.list()
 
         if (sessions.length === 0) {
           return '暂无会话'
@@ -544,23 +599,30 @@ export function apply(ctx: Context, config: Config) {
       }
     })
 
-  ctx.command('oc.session.new', {
-    authority: config.authority || 3,
+  ctx.command('oc.session.new', '创建新会话', {
+    authority: config.authority || 1,
   })
     .alias('oc.sn')
-    .action(async ({ session }) => {
+    .usage('强制创建一个全新的会话。新会话将使用当前配置的工作区目录。')
+    .example('oc.sn  创建并切换到新会话')
+    .action(async ({ session: chatbotSession }) => {
       try {
-        const c = await ensureClient()
-        const { data: newSession } = await c.session.create({
+        const opencodeClient = await ensureClient()
+        const directory = config.directory || 'default'
+        const dirHash = simpleHash(directory)
+        const { data: newSession } = await opencodeClient.session.create({
           body: {
-            title: `Koishi-${session.platform}-${session.userId || Date.now()}`,
+            title: `Koishi-${chatbotSession.platform}-${chatbotSession.userId}-${dirHash}-${Date.now()}`,
+          },
+          query: {
+            directory: config.directory,
           },
         })
 
-        const sessionId = getSessionId(session)
-        sessionCache.set(sessionId, newSession.id)
+        const sessionKey = `${chatbotSession.platform}-${chatbotSession.userId}-${dirHash}`
+        sessionCache.set(sessionKey, newSession.id)
 
-        return `✅ 已创建会话: ${newSession.id}\n📝 标题: ${newSession.title}`
+        return `✅ 已创建会话: ${newSession.id}\n📝 标题: ${newSession.title}\n📂 目录: ${directory}`
 
       } catch (error) {
         ctx.logger.error('创建会话失败:', error)
@@ -568,22 +630,26 @@ export function apply(ctx: Context, config: Config) {
       }
     })
 
-  ctx.command('oc.session.set <id:string>', {
-    authority: config.authority || 2,
+  ctx.command('oc.session.set <id:string>', '切换会话', {
+    authority: 2,
   })
     .alias('oc.ss')
-    .action(async ({ session }, id) => {
+    .usage('切换到指定的会话 ID。')
+    .example('oc.ss 1234-5678  切换到 ID 为 1234-5678 的会话')
+    .action(async ({ session: chatbotSession }, id) => {
       try {
-        const c = await ensureClient()
-        const { data: sessions } = await c.session.list()
+        const opencodeClient = await ensureClient()
+        const { data: sessions } = await opencodeClient.session.list()
         const targetSession = sessions.find(s => s.id === id)
 
         if (!targetSession) {
           return `❌ 会话 ${id} 不存在`
         }
 
-        const sessionId = getSessionId(session)
-        sessionCache.set(sessionId, id)
+        const directory = config.directory || 'default'
+        const dirHash = simpleHash(directory)
+        const sessionKey = `${chatbotSession.platform}-${chatbotSession.userId}-${dirHash}`
+        sessionCache.set(sessionKey, id)
 
         return `✅ 已切换到会话: ${id}\n📝 标题: ${targetSession.title}`
 
@@ -593,17 +659,16 @@ export function apply(ctx: Context, config: Config) {
       }
     })
 
-  ctx.command('oc.session.info', {
+  ctx.command('oc.session.info', '查看当前会话信息', {
     authority: config.authority || 1,
   })
     .alias('oc.si')
-    .action(async ({ session }) => {
+    .usage('显示当前连接的会话详情，包括 ID、标题、模型和创建时间。')
+    .action(async ({ session: chatbotSession }) => {
       try {
-        const c = await ensureClient()
-        const sessionId = getSessionId(session, config.defaultSession)
-        const opencodeSession = await c.session.get({
-          path: { id: sessionId },
-        })
+        const opencodeClient = await ensureClient()
+        // const sessionId = getSessionId(chatbotSession, config.defaultSession)
+        const opencodeSession = await getOrCreateSession(opencodeClient, chatbotSession, config)
 
         return `📌 当前会话信息:\n` +
           `ID: ${opencodeSession.id}\n` +
@@ -617,14 +682,16 @@ export function apply(ctx: Context, config: Config) {
       }
     })
 
-  ctx.command('oc.session.delete <id:string>', {
-    authority: config.authority || 4,
+  ctx.command('oc.session.delete <id:string>', '删除会话', {
+    authority: 4,
   })
     .alias('oc.sdel')
+    .usage('删除指定的会话。此操作不可逆。')
+    .example('oc.sdel 1234-5678  删除会话')
     .action(async (_, id) => {
       try {
-        const c = await ensureClient()
-        await c.session.delete({ path: { id } })
+        const opencodeClient = await ensureClient()
+        await opencodeClient.session.delete({ path: { id } })
 
         for (const [key, value] of Array.from(sessionCache.entries())) {
           if (value === id) {
@@ -640,10 +707,11 @@ export function apply(ctx: Context, config: Config) {
       }
     })
 
-  ctx.command('oc.health', {
+  ctx.command('oc.health', '检查服务健康状态', {
     authority: config.authority || 1,
   })
     .alias('oc.h')
+    .usage('检查 OpenCode 服务器的连接状态和版本信息。')
     .action(async () => {
       try {
         const hc = await ensureHealthClient()
@@ -659,13 +727,14 @@ export function apply(ctx: Context, config: Config) {
       }
     })
 
-  ctx.command('oc.agents', {
+  ctx.command('oc.agents', '列出可用 Agents', {
     authority: config.authority || 1,
   })
+    .usage('列出 OpenCode 服务器上所有可用的 Agent 工具。')
     .action(async () => {
       try {
-        const c = await ensureClient()
-        const { data: agents } = await c.app.agents()
+        const opencodeClient = await ensureClient()
+        const { data: agents } = await opencodeClient.app.agents()
 
         if (!agents || agents.length === 0) {
           return '暂无可用 agents'
@@ -683,9 +752,10 @@ export function apply(ctx: Context, config: Config) {
       }
     })
 
-  ctx.command('oc.stream.status', {
+  ctx.command('oc.stream.status', '查看流式输出状态', {
     authority: config.authority || 1,
   })
+    .usage('查看当前会话的流式输出配置和适配器支持情况。')
     .action(({ session }) => {
       const enable = config.enableStreaming ?? true
       const mode = config.streamMode ?? 'auto'
@@ -715,16 +785,18 @@ export function apply(ctx: Context, config: Config) {
       return msg
     })
 
-  ctx.command('oc.session.messages [page:number]', {
+  ctx.command('oc.session.messages [page:number]', '查看历史消息', {
     authority: config.authority || 1,
   })
-    .action(async ({ session }, page) => {
+    .usage('分页查看当前会话的历史用户消息。')
+    .example('oc.session.messages 2  查看第 2 页消息')
+    .action(async ({ session: chatbotSession }, page) => {
       try {
-        const c = await ensureClient()
-        const sessionId = getSessionId(session, config.defaultSession)
+        const opencodeClient = await ensureClient()
+        const opencodeSession = await getOrCreateSession(opencodeClient, chatbotSession, config)
 
-        const { data: messages } = await c.session.messages({
-          path: { id: sessionId }
+        const { data: messages } = await opencodeClient.session.messages({
+          path: { id: opencodeSession.id }
         })
 
         // Filter only user messages
@@ -767,36 +839,91 @@ export function apply(ctx: Context, config: Config) {
   })
 }
 
-function getSessionId(session: any, defaultId?: string): string {
-  const cacheKey = `${session.platform}-${session.userId}`
-  const cached = sessionCache.get(cacheKey)
+// function getSessionId(session: any, defaultId?: string): string {
+//   const cacheKey = `${session.platform}-${session.userId}`
+//   const cached = sessionCache.get(cacheKey)
 
-  if (cached) return cached
-  if (defaultId) return defaultId
+//   if (cached) return cached
+//   if (defaultId) return defaultId
 
-  return `koishi-${session.platform}-${session.userId || 'default'}`
-}
+//   return `koishi-${session.platform}-${session.userId || 'default'}`
+// }
 
 async function getOrCreateSession(
   client: any,
-  sessionId: string
+  chatbotSession: any,
+  config: Config,
 ): Promise<any> {
-  try {
-    const result = await client.session.get({ path: { id: sessionId } })
-    if (result.data && result.data.id) {
-      return result.data
+  const directory = config.directory || 'default'
+  const dirHash = simpleHash(directory)
+  const sessionKey = `${chatbotSession.platform}-${chatbotSession.userId}-${dirHash}`
+  const cachedId = sessionCache.get(sessionKey)
+
+  // 1. Try cache
+  if (cachedId) {
+    try {
+      const { data } = await client.session.get({ path: { id: cachedId } })
+      if (data && data.id) {
+        return data
+      }
+      // If cache invalid (404), remove and continue
+      sessionCache.delete(sessionKey)
+    } catch {
+      sessionCache.delete(sessionKey)
     }
-  } catch {
-    // v1 SDK doesn't throw errors, returns error object instead
   }
 
+  // 2. Try to find existing session by Title keys
+  const titlePrefix = `Koishi-${chatbotSession.platform}-${chatbotSession.userId}-${dirHash}`
+  try {
+    const { data: sessions } = await client.session.list()
+    // Find all sessions with matching prefix
+    if (sessions && sessions.length > 0) {
+      const candidates = sessions.filter((s: any) => s.title && s.title.startsWith(titlePrefix))
+
+      if (candidates.length > 0) {
+        // Sort by timestamp in title if possible, or by createdAt descending
+        candidates.sort((a: any, b: any) => {
+          // Try to extract timestamp from title: Prefix-TIMESTAMP
+          const timeA = parseInt(a.title.split('-').pop() || '0')
+          const timeB = parseInt(b.title.split('-').pop() || '0')
+
+          if (!isNaN(timeA) && !isNaN(timeB) && timeA > 0 && timeB > 0) {
+            return timeB - timeA // Descending
+          }
+          // Fallback to createdAt
+          if (a.createdAt && b.createdAt) {
+            return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+          }
+          return 0
+        })
+
+        const best = candidates[0]
+        sessionCache.set(sessionKey, best.id)
+        return best
+      }
+    }
+  } catch (error) {
+    // List failed?
+  }
+
+  // 3. Create new session
+  const newTitle = `${titlePrefix}-${Date.now()}`
   const result = await client.session.create({
     body: {
-      id: sessionId,
-      title: `Koishi-${sessionId}`,
+      title: newTitle,
+    },
+    query: {
+      directory: config.directory,
     },
   })
-  return result.data
+
+  if (result.data) {
+    sessionCache.set(sessionKey, result.data.id)
+    return result.data
+  }
+
+  throw new Error('Failed to create session')
 }
 
 function parseModel(modelStr: string): { providerID: string; modelID: string } {
@@ -1068,11 +1195,11 @@ async function handleNativeStreaming(
     if (bot) {
       try {
         if (sessionState.lastStreamMessageId) {
-          await bot.editMessage(sessionState.channelId, sessionState.lastStreamMessageId, fullContent)
+          await bot.editMessage(sessionState.channelId, sessionState.lastStreamMessageId, h.parse(fullContent))
           sessionState.lastStreamTime = now
           sessionState.hasStreamed = true
         } else {
-          const sentIds = await bot.sendMessage(sessionState.channelId, fullContent, sessionState.guildId)
+          const sentIds = await bot.sendMessage(sessionState.channelId, h.parse(fullContent), sessionState.guildId)
           if (sentIds && sentIds.length > 0) {
             sessionState.lastStreamMessageId = sentIds[0]
             sessionState.lastStreamTime = now
@@ -1113,15 +1240,74 @@ async function handleSegmentedStreaming(
     } else {
       // Check for sentence boundaries
       if (true) {
+        // Find safe split index
+        let splitIndex = -1
+
+        // Check for generic sentence boundaries first
         const lastDelimiter = Math.max(
           newContent.lastIndexOf('。'),
           newContent.lastIndexOf('！'),
           newContent.lastIndexOf('？'),
+          newContent.lastIndexOf('.'),
+          newContent.lastIndexOf('!'),
+          newContent.lastIndexOf('?'),
+          newContent.lastIndexOf(';'),
           newContent.lastIndexOf('\n')
         )
 
         if (lastDelimiter !== -1) {
-          toSend = newContent.substring(0, lastDelimiter + 1)
+          splitIndex = lastDelimiter + 1
+        }
+
+        // Tag Integrity Protection
+        // Check if the potential chunk (or the whole newContent if no delimiter) ends with an incomplete media tag
+        const candidate = splitIndex !== -1 ? newContent.substring(0, splitIndex) : newContent
+
+        // Regex to match incomplete tags at the end of string: <(image|audio|video|file)... without closing >
+        // We look for: < followed by one of the keywords, optionally more content, but NOT followed by >
+        const incompleteTagRegex = /<(?:img|audio|video|file)[^>]*$/i
+
+        if (incompleteTagRegex.test(candidate)) {
+          // It seems we are in the middle of a tag.
+          // If we found a delimiter before this tag started, cut there.
+          // If the tag started before the delimiter (rare for these delimiters), or no delimiter found, we must wait.
+
+          // Actually, simply checking if the *end* of our candidate string is inside a tag is enough.
+          // Safe strategy: If we detected a split point, but that split point seems to cut a tag or is inside one? 
+          // Better: Scan from the end of 'candidate'. If we see a '<' that starts a media tag but don't see a '>', it's incomplete.
+
+          // Let's refine:
+          // 1. Identify if 'candidate' ends with an incomplete tag.
+          // 2. If yes, try to backtrack to a previous safe delimiter that is BEFORE this tag.
+          // 3. If no such delimiter, then we can't send anything yet (return handled=false wait for more data).
+
+          const match = candidate.match(/<(?:img|audio|video|file)[^>]*$/i)
+          if (match) {
+            // We have an incomplete tag at the end.
+            // Can we split before it?
+            const tagStart = match.index!
+
+            // If there's a delimiter before the tag start, use that.
+            // We already found 'lastDelimiter'. Check if it is before tagStart.
+            if (splitIndex !== -1 && splitIndex <= tagStart) {
+              // Safe to split at delimiter, it's before the tag
+              // splitIndex remains as is
+            } else {
+              // The delimiter is inside the tag (unlikely for 。！？\n) or no delimiter found.
+              // We need to back off.
+              // If we have content before the tag, send that.
+              if (tagStart > 0) {
+                splitIndex = tagStart
+              } else {
+                // Tag starts at 0, wait for more data
+                splitIndex = -1
+              }
+            }
+          }
+        }
+
+        if (splitIndex !== -1) {
+          toSend = newContent.substring(0, splitIndex)
           newSentIndex = sentIndex + toSend.length
         }
       }
@@ -1130,7 +1316,7 @@ async function handleSegmentedStreaming(
     if (toSend) {
       const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
       if (bot) {
-        await bot.sendMessage(sessionState.channelId, toSend, sessionState.guildId)
+        await bot.sendMessage(sessionState.channelId, h.parse(toSend), sessionState.guildId)
         sessionState.streamBufferSentIndex = newSentIndex
         sessionState.hasStreamed = true
       }

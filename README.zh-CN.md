@@ -43,19 +43,30 @@ plugins:
     authority: 1
 ```
 
+### ✨ 核心特性
+
+- **🤖 智能多模态**：支持文本对话，更支持通过标准 Koishi 标签（`<img src="...">`, `<audio>`, `<video>`, `<file>`）直接发送媒体文件（参考 [Koishi 元素文档](https://koishi.chat/zh-CN/guide/basic/element.html)）。
+- **🔄 会话自动恢复**：基于 Title（`Koishi-<platform>-<userId>`）自动锚定历史会话，服务重启不丢失上下文。
+- **🌊 智能流式输出**：支持原生编辑 (`editMessage`) 和分段发送两种模式，打字机效果更流畅，且具备 HTML 标签完整性保护。
+- **🛠️ 强大的插件系统**：支持接入各类基于 OpenCode 协议的工具与 Agent。
+- **🔍 深度推理展示**：支持显示思维链 (Chain of Thought)，让 AI 的思考过程透明化。
+
 ### 配置选项
 
-| 选项 | 类型 | 默认值 | 描述 |
-|--------|------|---------|-------------|
-| `baseUrl` | string | `http://localhost:4096` | OpenCode 服务器地址 |
-| `defaultSession` | string | - | 所有用户的默认会话 ID |
-| `model` | string | - | 覆盖默认模型（格式：`provider/model`） |
-| `timeout` | number | `30000` | 消息生成超时时间（毫秒） |
-| `authority` | number | `1` | 命令所需权限等级 |
-| `enableStreaming` | boolean | `true` | 是否开启流式输出 |
-| `streamMode` | string | `auto` | 流式输出模式 (`auto`/`native`/`segment`) |
-| `streamInterval` | number | `500` | 流式更新间隔（毫秒） |
-| `showToolMessages` | boolean | `true` | 是否显示工具调用消息 |
+| 配置项 | 类型 | 默认值 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `baseUrl` | `string` | `http://localhost:4096` | OpenCode Server 的地址 |
+| `defaultSession` | `string` | - | 默认会话 ID (通常保留为空以使用自动管理) |
+| `model` | `string` | - | 指定使用的模型 (格式: `provider/model`) |
+| `timeout` | `number` | `30000` | 消息生成超时时间（毫秒） |
+| `authority` | `number` | `1` | 命令所需权限等级 |
+| `showReasoning` | `boolean` | `true` | 是否显示 `<think>` 推理过程 |
+| `enableStreaming` | `boolean` | `true` | 是否开启流式输出 |
+| `streamMode` | `auto` \| `native` \| `segment` | `auto` | 流式输出模式 (native: 原生编辑, segment: 分段发送) |
+| `streamInterval` | `number` | `500` | 流式更新间隔（毫秒） |
+| `showToolMessages` | `boolean` | `true` | 是否显示工具调用消息 |
+| `showProcessingMessage` | `boolean` | `true` | 是否显示 "🔄 正在处理" 提示 |
+| `directory` | `string` | - | 默认工作区目录 |
 
 ## 命令
 
@@ -63,9 +74,9 @@ plugins:
 
 #### 发送消息
 ```
-oc <消息>
+oc [消息]
 ```
-向 OpenCode 发送消息并获取回复。
+向 OpenCode 发送消息并获取回复。支持直接输入文本作为参数。
 
 **示例：**
 ```
@@ -124,7 +135,7 @@ oc.sl
 oc.session.new
 oc.sn
 ```
-为当前用户创建新会话。
+为当前用户创建新会话（如果您想强制通过新的上下文开始对话）。
 
 #### 切换会话
 ```
@@ -147,19 +158,42 @@ oc.sdel <id>
 ```
 删除指定会话。
 
+#### 查看历史消息
+```
+oc.session.messages [页码]
+```
+分页查看当前会话的历史用户消息。
+
+### 其他
+
+#### 列出 Agents
+```
+oc.agents
+```
+列出 OpenCode 服务器上所有可用的 Agent 工具。
+
+#### 查看流式状态
+```
+oc.stream.status
+```
+查看当前会话的流式输出配置和适配器支持情况。
+
 ## 权限等级
 
 不同命令有不同的默认权限等级：
 
 | 命令组 | 权限等级 |
 |---------------|-----------------|
-| 基础命令 | 1 |
+| 基础对话 | 1 |
 | 查看会话信息 | 1 |
+| 查看历史消息 | 1 |
 | 列出模型 | 1 |
+| 列出 Agents | 1 |
+| 查看流式状态 | 1 |
 | 切换会话 | 2 |
 | 设置模型 | 3 |
 | 列出会话 | 3 |
-| 创建会话 | 3 |
+| 创建会话 | 1 |
 | 删除会话 | 4 |
 
 ## 系统要求

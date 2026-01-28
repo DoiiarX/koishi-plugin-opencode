@@ -112,4 +112,5 @@ npm run clone [repo]
 
 - [Koishi Plugin Registry](https://registry.koishi.chat/)
 - [Koishi Development Guide](https://koishi.chat/zh-CN/guide/develop/workspace.html)
+- [Koishi Element (Message Format)](https://koishi.chat/zh-CN/guide/basic/element.html)
 - [npm Documentation](https://docs.npmjs.com/trusted-publishers)

@@ -17,3 +17,5 @@ tsconfig.tsbuildinfo
 *.njsproj
 *.sln
 .sisyphus/boulder.json
+.opencode
+package-lock.json
