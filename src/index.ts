@@ -93,6 +93,10 @@ interface SessionState {
   // Role tracking
   messageRoles?: Map<string, string> // messageId -> role
 
+  // Deduplication tracking
+  sentFinalMessages: Set<string> // messageId for step-finish
+  sentToolCalls: Set<string> // part.id or callID:status
+
   // Lifecycle
   status?: string // 'idle', 'busy', 'error', etc.
   hasStreamed?: boolean // Whether we have successfully streamed/edited messages
@@ -394,7 +398,9 @@ export function apply(ctx: Context, config: Config) {
           selfId: chatbotSession.selfId,
           lastActivity: Date.now(),
           partialMessages: new Map(),
-          toolStates: new Map()
+          toolStates: new Map(),
+          sentFinalMessages: new Set(),
+          sentToolCalls: new Set()
         })
         ctx.logger.info(`会话已添加到活跃追踪: ${sessionKey}`)
 
@@ -540,7 +546,6 @@ export function apply(ctx: Context, config: Config) {
             if (textParts.length === 0) {
               formattedResponse = '[无响应 - 可能是生成超时或需要更多时间]'
             }
-
             await chatbotSession.send(h.parse(formattedResponse))
           }
 
@@ -1075,6 +1080,11 @@ async function handlePartUpdated(ctx: Context, event: any, config: Config) {
       isStepFinish = true
       shouldSend = true
 
+      if (sessionState.sentFinalMessages.has(messageId)) {
+        shouldSend = false
+        return
+      }
+
       const parts: string[] = []
       if (showReasoning && current.reasoning) {
         parts.push(`🤔 思考: ${current.reasoning}`)
@@ -1099,8 +1109,13 @@ async function handlePartUpdated(ctx: Context, event: any, config: Config) {
 
           const toolMsg = formatPart(part, showReasoning)
           if (toolMsg) {
-            shouldSend = true
-            finalContent = toolMsg
+            const toolPartId = part.id || `${callId}:${status}`
+            if (sessionState.sentToolCalls.has(toolPartId)) {
+              shouldSend = false
+            } else {
+              shouldSend = true
+              finalContent = toolMsg
+            }
           }
         }
       }
@@ -1108,8 +1123,13 @@ async function handlePartUpdated(ctx: Context, event: any, config: Config) {
       const legacyFormatted = formatPart(part, showReasoning)
       if (legacyFormatted) {
         if (part.type !== 'text' && part.type !== 'reasoning' && part.type !== 'step-finish') {
-          shouldSend = true
-          finalContent = legacyFormatted
+          const partId = part.id || `${messageId}:${part.type}`
+          if (sessionState.sentToolCalls.has(partId)) {
+            shouldSend = false
+          } else {
+            shouldSend = true
+            finalContent = legacyFormatted
+          }
         }
       }
     }
@@ -1158,6 +1178,15 @@ async function handlePartUpdated(ctx: Context, event: any, config: Config) {
         const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
         if (bot) {
           await bot.sendMessage(sessionState!.channelId, finalContent, sessionState!.guildId)
+          sessionState.hasStreamed = true
+
+          // Mark as sent
+          if (part.type === 'step-finish' && messageId) {
+            sessionState.sentFinalMessages.add(messageId)
+          } else {
+            const trackId = part.id || (part.callID ? `${part.callID}:${part.state?.status}` : `${messageId}:${part.type}`)
+            sessionState.sentToolCalls.add(trackId)
+          }
         } else {
           ctx.logger.warn(`Bot not found for session ${sessionKey}`)
         }
@@ -1167,9 +1196,14 @@ async function handlePartUpdated(ctx: Context, event: any, config: Config) {
     // Fallback for events without messageId
     const formattedMessage = formatPart(part, showReasoning)
     if (formattedMessage) {
-      const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
-      if (bot) {
-        await bot.sendMessage(sessionState!.channelId, formattedMessage, sessionState!.guildId)
+      const partId = part.id || `${sessionId || 'fallback'}:${part.type}`
+      if (!sessionState.sentToolCalls.has(partId)) {
+        const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
+        if (bot) {
+          await bot.sendMessage(sessionState!.channelId, formattedMessage, sessionState!.guildId)
+          sessionState.sentToolCalls.add(partId)
+          sessionState.hasStreamed = true
+        }
       }
     }
   }
@@ -1239,77 +1273,52 @@ async function handleSegmentedStreaming(
       newSentIndex = fullContent.length
     } else {
       // Check for sentence boundaries
-      if (true) {
-        // Find safe split index
-        let splitIndex = -1
+      // Find safe split index
+      let splitIndex = -1
 
-        // Check for generic sentence boundaries first
-        const lastDelimiter = Math.max(
-          newContent.lastIndexOf('。'),
-          newContent.lastIndexOf('！'),
-          newContent.lastIndexOf('？'),
-          newContent.lastIndexOf('.'),
-          newContent.lastIndexOf('!'),
-          newContent.lastIndexOf('?'),
-          newContent.lastIndexOf(';'),
-          newContent.lastIndexOf('\n')
-        )
+      // Stricter delimiters: \n\n, 。, . (followed by space or end of string)
+      const d1 = newContent.lastIndexOf('\n\n')
+      const d2 = newContent.lastIndexOf('。')
+      // Check for ". " (dot preceded by a letter and followed by whitespace)
+      let d3 = -1
+      const dotMatch = [...newContent.matchAll(/[a-zA-Z]\.[\s\n]/g)]
+      if (dotMatch.length > 0) {
+        // match index is for the character, dot is +1
+        d3 = dotMatch[dotMatch.length - 1].index! + 1
+      }
 
-        if (lastDelimiter !== -1) {
-          splitIndex = lastDelimiter + 1
-        }
+      const lastDelimiter = Math.max(d1 !== -1 ? d1 + 1 : -1, d2, d3)
+      // Adjust splitIndex based on delimiter (include delimiter for 。 and . )
+      if (lastDelimiter !== -1) {
+        if (lastDelimiter === d1 + 1) splitIndex = d1 + 2 // After \n\n
+        else splitIndex = lastDelimiter + 1
+      }
 
-        // Tag Integrity Protection
-        // Check if the potential chunk (or the whole newContent if no delimiter) ends with an incomplete media tag
-        const candidate = splitIndex !== -1 ? newContent.substring(0, splitIndex) : newContent
+      // Tag Integrity Protection
+      // Check if the potential chunk (or the whole newContent if no delimiter) ends with an incomplete media tag
+      const candidate = splitIndex !== -1 ? newContent.substring(0, splitIndex) : newContent
 
-        // Regex to match incomplete tags at the end of string: <(image|audio|video|file)... without closing >
-        // We look for: < followed by one of the keywords, optionally more content, but NOT followed by >
-        const incompleteTagRegex = /<(?:img|audio|video|file)[^>]*$/i
+      // Regex to match incomplete tags at the end of string: <(image|audio|video|file)... without closing >
+      // We look for: < followed by one of the keywords, optionally more content, but NOT followed by >
+      const incompleteTagRegex = /<(?:img|audio|video|file)[^>]*$/i
 
-        if (incompleteTagRegex.test(candidate)) {
-          // It seems we are in the middle of a tag.
-          // If we found a delimiter before this tag started, cut there.
-          // If the tag started before the delimiter (rare for these delimiters), or no delimiter found, we must wait.
-
-          // Actually, simply checking if the *end* of our candidate string is inside a tag is enough.
-          // Safe strategy: If we detected a split point, but that split point seems to cut a tag or is inside one? 
-          // Better: Scan from the end of 'candidate'. If we see a '<' that starts a media tag but don't see a '>', it's incomplete.
-
-          // Let's refine:
-          // 1. Identify if 'candidate' ends with an incomplete tag.
-          // 2. If yes, try to backtrack to a previous safe delimiter that is BEFORE this tag.
-          // 3. If no such delimiter, then we can't send anything yet (return handled=false wait for more data).
-
-          const match = candidate.match(/<(?:img|audio|video|file)[^>]*$/i)
-          if (match) {
-            // We have an incomplete tag at the end.
-            // Can we split before it?
-            const tagStart = match.index!
-
-            // If there's a delimiter before the tag start, use that.
-            // We already found 'lastDelimiter'. Check if it is before tagStart.
-            if (splitIndex !== -1 && splitIndex <= tagStart) {
-              // Safe to split at delimiter, it's before the tag
-              // splitIndex remains as is
-            } else {
-              // The delimiter is inside the tag (unlikely for 。！？\n) or no delimiter found.
-              // We need to back off.
-              // If we have content before the tag, send that.
-              if (tagStart > 0) {
-                splitIndex = tagStart
-              } else {
-                // Tag starts at 0, wait for more data
-                splitIndex = -1
-              }
-            }
+      if (incompleteTagRegex.test(candidate)) {
+        // Tag integrity logic...
+        const match = candidate.match(/<(?:img|audio|video|file)[^>]*$/i)
+        if (match) {
+          const tagStart = match.index!
+          if (splitIndex !== -1 && splitIndex <= tagStart) {
+            // Already splitting before the tag
+          } else {
+            if (tagStart > 0) splitIndex = tagStart
+            else splitIndex = -1
           }
         }
+      }
 
-        if (splitIndex !== -1) {
-          toSend = newContent.substring(0, splitIndex)
-          newSentIndex = sentIndex + toSend.length
-        }
+      if (splitIndex !== -1) {
+        toSend = newContent.substring(0, splitIndex)
+        newSentIndex = sentIndex + toSend.length
       }
     }
 

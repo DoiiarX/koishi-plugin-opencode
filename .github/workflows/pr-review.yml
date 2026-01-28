@@ -17,6 +17,7 @@ jobs:
       contents: read        # 只读代码
       pull-requests: write  # 允许写评论
       issues: write
+      id-token: write
 
     steps:
       - name: Checkout repository
@@ -58,6 +59,8 @@ jobs:
           use_github_token: true
           prompt: |
             审查这个 Pull Request 的代码变更。
+            
+            你没有提交PR的权限，你需要做的只是审查代码，并用gh api创建评论。
 
             <pr-title>
             ${{ steps.pr-details.outputs.title }}
