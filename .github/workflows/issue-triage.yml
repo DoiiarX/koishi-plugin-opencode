@@ -158,3 +158,5 @@ jobs:
 
             或者：
             已完成操作：已分类为 bug (high)，已添加标签 bug, high-priority
+
+            此步骤完成后立即结束。不要进行任何pr或commit操作。
