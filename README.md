@@ -52,6 +52,10 @@ plugins:
 | `model` | string | - | Override default model (format: `provider/model`) |
 | `timeout` | number | `30000` | Message generation timeout in milliseconds |
 | `authority` | number | `1` | Required permission level for commands |
+| `enableStreaming` | boolean | `true` | Enable streaming output |
+| `streamMode` | string | `auto` | Streaming mode (`auto`/`native`/`segment`) |
+| `streamInterval` | number | `500` | Streaming update interval (ms) |
+| `showToolMessages` | boolean | `true` | Show tool execution messages |
 
 ## Commands
 
@@ -78,6 +82,17 @@ Check the health status of your OpenCode Server.
 **Example:**
 ```
 oc.h
+```
+
+#### Check Stream Status
+```
+oc.stream.status
+```
+Check current streaming status, mode, and update interval.
+
+**Example:**
+```
+oc.stream.status
 ```
 
 ### Model Management

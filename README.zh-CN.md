@@ -52,6 +52,10 @@ plugins:
 | `model` | string | - | 覆盖默认模型（格式：`provider/model`） |
 | `timeout` | number | `30000` | 消息生成超时时间（毫秒） |
 | `authority` | number | `1` | 命令所需权限等级 |
+| `enableStreaming` | boolean | `true` | 是否开启流式输出 |
+| `streamMode` | string | `auto` | 流式输出模式 (`auto`/`native`/`segment`) |
+| `streamInterval` | number | `500` | 流式更新间隔（毫秒） |
+| `showToolMessages` | boolean | `true` | 是否显示工具调用消息 |
 
 ## 命令
 

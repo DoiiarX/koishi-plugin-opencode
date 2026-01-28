@@ -5,6 +5,19 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/) 规范。
 
+## [0.0.6] - 2026-01-28
+
+### 新增
+- 流式输出支持 (`enableStreaming`, `streamMode`, `streamInterval`)
+- `oc.stream.status` 指令用于查看流式状态
+- `showToolMessages` 配置项控制工具消息显示
+
+### 变更
+- 优化会话生命周期管理，解决流式输出后的内容重复发送问题
+
+### 修复
+- 修复用户信息回显导致的消息泄漏问题 (通过 Role 过滤)
+
 ## [0.0.5] - 2026-01-28
 
 ### 新增
