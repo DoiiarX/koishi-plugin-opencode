@@ -1282,11 +1282,12 @@ async function handleSegmentedStreaming(
       // Stricter delimiters: \n\n, 。, . (followed by space or end of string)
       const d1 = newContent.lastIndexOf('\n\n')
       const d2 = newContent.lastIndexOf('。')
-      // Check for ". " (dot followed by whitespace)
+      // Check for ". " (dot preceded by a letter and followed by whitespace)
       let d3 = -1
-      const dotMatch = [...newContent.matchAll(/\.[\s\n]/g)]
+      const dotMatch = [...newContent.matchAll(/[a-zA-Z]\.[\s\n]/g)]
       if (dotMatch.length > 0) {
-        d3 = dotMatch[dotMatch.length - 1].index!
+        // match index is for the character, dot is +1
+        d3 = dotMatch[dotMatch.length - 1].index! + 1
       }
 
       const lastDelimiter = Math.max(d1 !== -1 ? d1 + 1 : -1, d2, d3)
