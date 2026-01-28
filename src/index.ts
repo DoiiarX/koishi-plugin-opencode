@@ -253,7 +253,7 @@ export function apply(ctx: Context, config: Config) {
 
 
   ctx.command('oc.models [keyword:text]', {
-    authority: config.authority || 1,
+    authority: 1,
   })
     .alias('oc.m')
     .action(async (_, keyword) => {
@@ -294,7 +294,7 @@ export function apply(ctx: Context, config: Config) {
     })
 
   ctx.command('oc.model.set <model:string>', {
-    authority: config.authority || 3,
+    authority: 3,
   })
     .alias('oc.ms')
     .action(async ({ session: chatbotSession }, model) => {
@@ -567,7 +567,7 @@ export function apply(ctx: Context, config: Config) {
     })
 
   ctx.command('oc.session.list', {
-    authority: config.authority || 3,
+    authority: 3,
   })
     .alias('oc.sl')
     .action(async () => {
@@ -621,7 +621,7 @@ export function apply(ctx: Context, config: Config) {
     })
 
   ctx.command('oc.session.set <id:string>', {
-    authority: config.authority || 2,
+    authority: 2,
   })
     .alias('oc.ss')
     .action(async ({ session: chatbotSession }, id) => {
@@ -670,7 +670,7 @@ export function apply(ctx: Context, config: Config) {
     })
 
   ctx.command('oc.session.delete <id:string>', {
-    authority: config.authority || 4,
+    authority: 4,
   })
     .alias('oc.sdel')
     .action(async (_, id) => {
