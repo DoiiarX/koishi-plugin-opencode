@@ -252,10 +252,12 @@ export function apply(ctx: Context, config: Config) {
   })
 
 
-  ctx.command('oc.models [keyword:text]', {
+  ctx.command('oc.models [keyword:text]', '列出可用模型', {
     authority: 1,
   })
     .alias('oc.m')
+    .usage('列出 OpenCode 服务器支持的所有模型。可以使用关键词过滤。')
+    .example('oc.models claude  列出所有包含 claude 的模型')
     .action(async (_, keyword) => {
       try {
         const opencodeClient = await ensureClient()
@@ -293,10 +295,12 @@ export function apply(ctx: Context, config: Config) {
       }
     })
 
-  ctx.command('oc.model.set <model:string>', {
+  ctx.command('oc.model.set <model:string>', '设置默认模型', {
     authority: 3,
   })
     .alias('oc.ms')
+    .usage('为当前环境设置默认使用的模型。此设置会影响后续的新会话。')
+    .example('oc.ms anthropic/claude-3-5-sonnet  设置为 Claude 3.5 Sonnet')
     .action(async ({ session: chatbotSession }, model) => {
       try {
         if (!model) return '❌ 请提供模型 ID (例如: anthropic/claude-3-5-sonnet)'
@@ -358,9 +362,10 @@ export function apply(ctx: Context, config: Config) {
     return healthClient
   }
 
-  ctx.command('oc [...message]', {
-    authority: config.authority || 1,
-  })
+  ctx.command('oc [...message]', '与 AI 对话')
+    .usage('发送消息给 AI 并获取回复。支持上下文记忆和流式输出。')
+    .example('oc 你好  发送"你好"')
+    .example('oc 给我画一只猫  请求生成图片 (需配置 image 工具)')
     .action(async ({ session: chatbotSession }, ...messageParts) => {
       const message = messageParts.join(' ')
       if (!message.trim()) return // Ignore empty messages
@@ -566,10 +571,11 @@ export function apply(ctx: Context, config: Config) {
       }
     })
 
-  ctx.command('oc.session.list', {
+  ctx.command('oc.session.list', '列出活跃会话', {
     authority: 3,
   })
     .alias('oc.sl')
+    .usage('显示当前 OpenCode 服务中所有的会话列表。')
     .action(async () => {
       try {
         const opencodeClient = await ensureClient()
@@ -591,10 +597,12 @@ export function apply(ctx: Context, config: Config) {
       }
     })
 
-  ctx.command('oc.session.new', {
+  ctx.command('oc.session.new', '创建新会话', {
     authority: config.authority || 1,
   })
     .alias('oc.sn')
+    .usage('强制创建一个全新的会话。新会话将使用当前配置的工作区目录。')
+    .example('oc.sn  创建并切换到新会话')
     .action(async ({ session: chatbotSession }) => {
       try {
         const opencodeClient = await ensureClient()
@@ -620,10 +628,12 @@ export function apply(ctx: Context, config: Config) {
       }
     })
 
-  ctx.command('oc.session.set <id:string>', {
+  ctx.command('oc.session.set <id:string>', '切换会话', {
     authority: 2,
   })
     .alias('oc.ss')
+    .usage('切换到指定的会话 ID。')
+    .example('oc.ss 1234-5678  切换到 ID 为 1234-5678 的会话')
     .action(async ({ session: chatbotSession }, id) => {
       try {
         const opencodeClient = await ensureClient()
@@ -647,10 +657,11 @@ export function apply(ctx: Context, config: Config) {
       }
     })
 
-  ctx.command('oc.session.info', {
+  ctx.command('oc.session.info', '查看当前会话信息', {
     authority: config.authority || 1,
   })
     .alias('oc.si')
+    .usage('显示当前连接的会话详情，包括 ID、标题、模型和创建时间。')
     .action(async ({ session: chatbotSession }) => {
       try {
         const opencodeClient = await ensureClient()
@@ -669,10 +680,12 @@ export function apply(ctx: Context, config: Config) {
       }
     })
 
-  ctx.command('oc.session.delete <id:string>', {
+  ctx.command('oc.session.delete <id:string>', '删除会话', {
     authority: 4,
   })
     .alias('oc.sdel')
+    .usage('删除指定的会话。此操作不可逆。')
+    .example('oc.sdel 1234-5678  删除会话')
     .action(async (_, id) => {
       try {
         const opencodeClient = await ensureClient()
@@ -692,10 +705,11 @@ export function apply(ctx: Context, config: Config) {
       }
     })
 
-  ctx.command('oc.health', {
+  ctx.command('oc.health', '检查服务健康状态', {
     authority: config.authority || 1,
   })
     .alias('oc.h')
+    .usage('检查 OpenCode 服务器的连接状态和版本信息。')
     .action(async () => {
       try {
         const hc = await ensureHealthClient()
@@ -711,9 +725,10 @@ export function apply(ctx: Context, config: Config) {
       }
     })
 
-  ctx.command('oc.agents', {
+  ctx.command('oc.agents', '列出可用 Agents', {
     authority: config.authority || 1,
   })
+    .usage('列出 OpenCode 服务器上所有可用的 Agent 工具。')
     .action(async () => {
       try {
         const opencodeClient = await ensureClient()
@@ -735,9 +750,10 @@ export function apply(ctx: Context, config: Config) {
       }
     })
 
-  ctx.command('oc.stream.status', {
+  ctx.command('oc.stream.status', '查看流式输出状态', {
     authority: config.authority || 1,
   })
+    .usage('查看当前会话的流式输出配置和适配器支持情况。')
     .action(({ session }) => {
       const enable = config.enableStreaming ?? true
       const mode = config.streamMode ?? 'auto'
@@ -767,9 +783,11 @@ export function apply(ctx: Context, config: Config) {
       return msg
     })
 
-  ctx.command('oc.session.messages [page:number]', {
+  ctx.command('oc.session.messages [page:number]', '查看历史消息', {
     authority: config.authority || 1,
   })
+    .usage('分页查看当前会话的历史用户消息。')
+    .example('oc.session.messages 2  查看第 2 页消息')
     .action(async ({ session: chatbotSession }, page) => {
       try {
         const opencodeClient = await ensureClient()
