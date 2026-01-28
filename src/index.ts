@@ -27,6 +27,10 @@ export interface Config {
   authority?: number
   timeout?: number
   showReasoning?: boolean
+  enableStreaming?: boolean
+  streamMode?: 'auto' | 'native' | 'segment'
+  streamInterval?: number
+  showToolMessages?: boolean
 }
 
 
@@ -38,6 +42,10 @@ export const Config: Schema<Config> = Schema.intersect([
     model: Schema.string().description('覆盖默认模型 (格式: provider/model)'),
     timeout: Schema.number().default(30000).description('生成超时时间 (毫秒)'),
     showReasoning: Schema.boolean().description('是否显示 agent 的推理过程').default(true),
+    showToolMessages: Schema.boolean().description('是否显示工具调用消息').default(true),
+    enableStreaming: Schema.boolean().description('是否开启流式输出').default(true),
+    streamMode: Schema.union(['auto', 'native', 'segment']).description('流式输出模式 (auto: 自动检测, native: 编辑消息, segment: 分段发送)').default('auto'),
+    streamInterval: Schema.number().description('流式更新间隔 (毫秒)').default(500),
   }).description('OpenCode 连接配置'),
   Schema.object({
     authority: Schema.number().default(1).description('使用命令所需权限等级'),
@@ -60,6 +68,19 @@ interface SessionState {
   partialMessages?: Map<string, { text?: string; reasoning?: string }>
   // track tool execution states: callID -> lastStatus
   toolStates?: Map<string, string>
+
+  // Streaming state
+  lastStreamTime?: number
+  lastStreamMessageId?: string // For native mode
+  streamBufferSentIndex?: number // For segment mode: how many chars have been sent
+  streamMode?: 'native' | 'segment' // Resolved mode for this session
+
+  // Role tracking
+  messageRoles?: Map<string, string> // messageId -> role
+
+  // Lifecycle
+  status?: string // 'idle', 'busy', 'error', etc.
+  hasStreamed?: boolean // Whether we have successfully streamed/edited messages
 }
 
 const activeSessions = new Map<string, SessionState>()
@@ -409,7 +430,16 @@ export function apply(ctx: Context, config: Config) {
 
             const sessionState = activeSessions.get(sessionKey)
             if (!sessionState) {
-              // Session removed means task completed
+              // Should not happen with new logic unless manually deleted
+              break
+            }
+
+            // Check status from state
+            if (sessionState.status === 'idle') {
+              break
+            }
+            if (sessionState.status === 'error') {
+              capturedError = true // Mark as error to skip sending
               break
             }
 
@@ -417,48 +447,60 @@ export function apply(ctx: Context, config: Config) {
             if (Date.now() - lastActivity > timeout) {
               ctx.logger.warn(`[${opencodeSession.id}] 响应生成超时 (无活动 ${timeout}ms)`)
               await session.send('⚠️ 响应生成超时')
+              capturedError = true // Avoid sending partial result
               break
             }
 
             await new Promise(resolve => setTimeout(resolve, 100))
           }
 
-          const { data: messages } = await c.session.messages({
-            path: { id: opencodeSession.id }
-          })
+          // Final check on state
+          const finalState = activeSessions.get(sessionKey)
+          const hasStreamed = finalState?.hasStreamed ?? false
 
-          let responseParts: any[] = []
+          if (!capturedError && !hasStreamed) {
+            // Only fetch and send if we haven't streamed anything and no error occurred
+            const { data: messages } = await c.session.messages({
+              path: { id: opencodeSession.id }
+            })
 
-          if (targetMsgId) {
-            const found = messages.find((m: any) => m.info.id === targetMsgId)
-            if (found) {
-              responseParts = found.parts || []
+            // ... [logic to find responseParts] ...
+            let responseParts: any[] = []
+            if (targetMsgId) {
+              const found = messages.find((m: any) => m.info.id === targetMsgId)
+              if (found) responseParts = found.parts || []
+              else responseParts = messages[messages.length - 1]?.parts || []
             } else {
               responseParts = messages[messages.length - 1]?.parts || []
             }
-          } else {
-            responseParts = messages[messages.length - 1]?.parts || []
+
+            const textParts = responseParts
+              .filter((p: any) => p.type === 'text')
+              .map((p: any) => p.text)
+              .join('\n')
+
+            let formattedResponse = textParts || '[无响应]'
+
+            if (responseParts.some((p: any) => p.type === 'code')) {
+              formattedResponse += '\n\n*包含代码块*'
+            }
+
+            if (textParts.length === 0) {
+              formattedResponse = '[无响应 - 可能是生成超时或需要更多时间]'
+            }
+
+            await session.send(formattedResponse)
           }
-
-          const textParts = responseParts
-            .filter((p: any) => p.type === 'text')
-            .map((p: any) => p.text)
-            .join('\n')
-
-          let formattedResponse = textParts || '[无响应]'
-
-          if (responseParts.some((p: any) => p.type === 'code')) {
-            formattedResponse += '\n\n*包含代码块*'
-          }
-
-          if (textParts.length === 0 && !capturedError) {
-            formattedResponse = '[无响应 - 可能是生成超时或需要更多时间]'
-          }
-
-          await session.send(formattedResponse)
 
         } finally {
           removeListeners.forEach(off => off())
+
+          // Cleanup
+          const state = activeSessions.get(sessionKey)
+          if (state && state.opencodeMessageId) {
+            messageIdToSessionKey.delete(state.opencodeMessageId)
+          }
+          activeSessions.delete(sessionKey)
         }
 
       } catch (error) {
@@ -641,6 +683,38 @@ export function apply(ctx: Context, config: Config) {
       }
     })
 
+  ctx.command('oc.stream.status', {
+    authority: config.authority || 1,
+  })
+    .action(({ session }) => {
+      const enable = config.enableStreaming ?? true
+      const mode = config.streamMode ?? 'auto'
+      const interval = config.streamInterval ?? 500
+
+      let msg = `🌊 流式输出状态:\n`
+      msg += `启用: ${enable ? '✅ 开启' : '❌ 关闭'}\n`
+      msg += `配置模式: ${mode}\n`
+
+      if (enable) {
+        if (mode === 'auto') {
+          // Check capability
+          const canEdit = session.bot && typeof session.bot.editMessage === 'function'
+          msg += `当前判定: ${canEdit ? '⚡ 原生流式 (Native)' : '📝 分段流式 (Segment)'}\n`
+          msg += canEdit
+            ? `(适配器支持 editMessage)`
+            : `(适配器不支持 editMessage，自动降级)`
+        } else if (mode === 'native') {
+          msg += `当前策略: ⚡ 原生流式 (强制)\n`
+          msg += `(注: 若平台不支持，可能会发送失败并回退)`
+        } else {
+          msg += `当前策略: 📝 分段流式 (强制)`
+        }
+        msg += `\n更新间隔: ${interval}ms`
+      }
+
+      return msg
+    })
+
   ctx.command('oc.session.messages [page:number]', {
     authority: config.authority || 1,
   })
@@ -762,7 +836,7 @@ async function setupEventStream(client: any, ctx: Context, config: Config) {
           ctx.logger.info(`会话更新: ${event.properties.info?.id || 'unknown'} event.properties: ${JSON.stringify(event.properties)}`)
           break
         case 'message.part.updated':
-          await handlePartUpdated(ctx, event, config.showReasoning ?? true)
+          await handlePartUpdated(ctx, event, config)
           break
         case 'message.updated':
           await handleMessageUpdated(ctx, event)
@@ -795,7 +869,13 @@ async function setupEventStream(client: any, ctx: Context, config: Config) {
   }
 }
 
-async function handlePartUpdated(ctx: Context, event: any, showReasoning: boolean) {
+async function handlePartUpdated(ctx: Context, event: any, config: Config) {
+  const showReasoning = config.showReasoning ?? true
+  const enableStreaming = config.enableStreaming ?? true
+  const streamModeConfig = config.streamMode ?? 'auto'
+  const streamInterval = config.streamInterval ?? 500
+  const showToolMessages = config.showToolMessages ?? true
+
   const part = event.properties.part
 
   if (!part) {
@@ -803,9 +883,6 @@ async function handlePartUpdated(ctx: Context, event: any, showReasoning: boolea
     return
   }
 
-  // Try to find session key via multiple methods
-  // 1. Check for session ID in properties (some events have it)
-  // 2. Check for message ID in path (standard resource path) and lookup in map
   if (part?.type !== 'text' && part?.type !== 'reasoning') {
     ctx.logger.info(`Event properties: ${JSON.stringify(event.properties)}`)
   }
@@ -835,10 +912,18 @@ async function handlePartUpdated(ctx: Context, event: any, showReasoning: boolea
     }
   }
 
-  if (!sessionState) {
-    // Log debug info to help diagnose if still failing
-    ctx.logger.info(`No active session found for part update. IDs found: Session=${sessionId}, Message=${messageId}. Event keys: [${Object.keys(event).join(', ')}]`)
+  if (!sessionState || !sessionKey) {
+    ctx.logger.info(`No active session found for part update. IDs found: Session=${sessionId}, Message=${messageId}.`)
     return
+  }
+
+  // Role Filtering: Ignore parts from 'user' messages
+  if (messageId && sessionState.messageRoles) {
+    const role = sessionState.messageRoles.get(messageId)
+    if (role === 'user') {
+      // ctx.logger.debug(`Skipping part update for user message: ${messageId}`)
+      return
+    }
   }
 
   // Handle message buffering
@@ -850,6 +935,7 @@ async function handlePartUpdated(ctx: Context, event: any, showReasoning: boolea
     let current = sessionState.partialMessages.get(messageId) || {}
     let shouldSend = false
     let finalContent = ''
+    let isStepFinish = false
 
     if (part.type === 'text') {
       current.text = part.text
@@ -858,73 +944,194 @@ async function handlePartUpdated(ctx: Context, event: any, showReasoning: boolea
       current.reasoning = part.text
       sessionState.partialMessages.set(messageId, current)
     } else if (part.type === 'step-finish') {
-      // Step finished, prepare to send
+      isStepFinish = true
       shouldSend = true
 
       const parts: string[] = []
       if (showReasoning && current.reasoning) {
         parts.push(`🤔 思考: ${current.reasoning}`)
       }
-
-      finalContent = parts.join('\n\n')
-
-      // Clear buffer for this message after sending?
-      // Or maybe keep it if we expect more updates? 
-      // Usually step-finish means this unit of work is done.
-      sessionState.partialMessages.delete(messageId)
-    } else if (part.type === 'tool') {
-      // Handle tool state tracking to avoid spam
-      const callId = part.callID || 'unknown'
-      const status = part.state?.status || 'unknown'
-
-      if (!sessionState.toolStates) {
-        sessionState.toolStates = new Map()
+      if (current.text) {
+        parts.push(current.text)
       }
 
-      const lastStatus = sessionState.toolStates.get(callId)
-      if (lastStatus !== status) {
-        sessionState.toolStates.set(callId, status)
+      finalContent = parts.join('\n\n')
+      // Note: We don't delete partialMessages here immediately if we want to support further updates? 
+      // But step-finish usually means done. 
+      // Safe to keep it until session cleanup or next overwrite.
+    } else if (part.type === 'tool') {
+      if (showToolMessages) {
+        const callId = part.callID || 'unknown'
+        const status = part.state?.status || 'unknown'
 
-        const toolMsg = formatPart(part, showReasoning)
-        if (toolMsg) {
-          shouldSend = true
-          finalContent = toolMsg
+        if (!sessionState.toolStates) {
+          sessionState.toolStates = new Map()
+        }
+
+        const lastStatus = sessionState.toolStates.get(callId)
+        if (lastStatus !== status) {
+          sessionState.toolStates.set(callId, status)
+
+          const toolMsg = formatPart(part, showReasoning)
+          if (toolMsg) {
+            shouldSend = true
+            finalContent = toolMsg
+          }
         }
       }
     } else {
-      // For other types (tool_use, etc.), maybe just send immediately or ignore?
-      // Based on user request, we focus on text/step-finish flow.
-      // If it's a standalone event we might want to let it pass or buffer it too.
-      // For now, let's strictly follow the "buffer text, send on step-finish" logic for text/reasoning.
-
-      // If it is NOT text/reasoning, we might want to check if it needs handling.
-      // formatPart handles tool_use, etc. 
-      // If those don't emit 'step-finish', we might never send them if we only wait for step-finish.
-      // BUT, usually tool use comes with step-start/finish too?
-
-      // Let's use the standard formatPart for non-text/reasoning immediate updates if necessary,
-      // OR assume everything is wrapped in steps.
-
-      // Safe bet: if it's not text/reasoning/step-finish, send it immediately (legacy behavior)
-      // UNLESS it interacts with the buffer.
-
       const legacyFormatted = formatPart(part, showReasoning)
       if (legacyFormatted) {
-        // Check if we should send this immediately
         if (part.type !== 'text' && part.type !== 'reasoning' && part.type !== 'step-finish') {
-          // Send immediately
           shouldSend = true
           finalContent = legacyFormatted
         }
       }
     }
 
+    // --- Streaming Logic ---
+    if (enableStreaming && (part.type === 'text' || part.type === 'reasoning' || isStepFinish)) {
+      const parts: string[] = []
+      if (showReasoning && current.reasoning) {
+        parts.push(`🤔 思考: ${current.reasoning}`)
+      }
+      if (current.text) {
+        parts.push(current.text)
+      }
+      const fullContent = parts.join('\n\n')
+
+      if (!fullContent) return
+
+      // Determine streaming mode if not set
+      if (!sessionState.streamMode) {
+        const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
+        if (streamModeConfig === 'native') {
+          sessionState.streamMode = 'native'
+        } else if (streamModeConfig === 'segment') {
+          sessionState.streamMode = 'segment'
+        } else {
+          // Auto detection
+          if (bot && typeof bot.editMessage === 'function') {
+            sessionState.streamMode = 'native'
+          } else {
+            sessionState.streamMode = 'segment'
+          }
+        }
+      }
+
+      // Native Streaming (Edit Message)
+      if (sessionState.streamMode === 'native') {
+        const now = Date.now()
+        const lastTime = sessionState.lastStreamTime || 0
+
+        // Conditions: 
+        // 1. Is step finish (always send final state)
+        // 2. Or throttle interval passed AND we have a message to edit
+        // 3. Or we haven't sent anything yet (first message)
+
+        if (isStepFinish || (now - lastTime > streamInterval) || !sessionState.lastStreamMessageId) {
+          const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
+          if (bot) {
+            try {
+              if (sessionState.lastStreamMessageId) {
+                await bot.editMessage(sessionState.channelId, sessionState.lastStreamMessageId, fullContent)
+                sessionState.lastStreamTime = now
+                sessionState.hasStreamed = true
+              } else {
+                const sentIds = await bot.sendMessage(sessionState.channelId, fullContent, sessionState.guildId)
+                if (sentIds && sentIds.length > 0) {
+                  sessionState.lastStreamMessageId = sentIds[0]
+                  sessionState.lastStreamTime = now
+                  sessionState.hasStreamed = true
+                }
+                sessionState.hasStreamed = true
+              }
+            } catch (err) {
+              ctx.logger.warn(`Native streaming failed, downgrading to segment mode:`, err)
+              sessionState.streamMode = 'segment'
+              sessionState.streamBufferSentIndex = 0 // Reset sent index?? 
+              // Actually if native failed, we might have sent nothing or half. 
+              // Safer to just let segment mode handle from now on.
+              // If we already sent something via native, segment mode might duplicate? 
+              // We assume we start segmenting from the *rest*.
+              // Ideally validation: if lastStreamMessageId exists, maybe we just append new segments?
+              // Let's set sentIndex to current length roughly to avoid huge dupes if edit failed but msg exists?
+              // No, if edit failed, user sees old msg. We should probably append new chunks.
+              sessionState.streamBufferSentIndex = fullContent.length
+            }
+          }
+        }
+
+        // If native, we effectively "handled" the sending (even if throttled, we wait).
+        // So we suppress the default "shouldSend" for step-finish if we handled it here?
+        // Yes, if isStepFinish, we edited above. So set shouldSend = false to avoid double send below.
+        if (isStepFinish && sessionState.lastStreamMessageId) {
+          shouldSend = false
+        }
+      }
+
+      // Segmented Streaming
+      else if (sessionState.streamMode === 'segment') {
+        const sentIndex = sessionState.streamBufferSentIndex || 0
+        const newContent = fullContent.substring(sentIndex)
+
+        if (newContent) {
+          let toSend = ''
+          let newSentIndex = sentIndex
+
+          if (isStepFinish) {
+            // Send everything remaining
+            toSend = newContent
+            newSentIndex = fullContent.length
+          } else {
+            // Check for sentence boundaries
+            // Matches common sentence endings, newlines
+            const match = newContent.match(/([。！？\n]+)/g)
+            if (match) {
+              // Find the last index of a delimiter
+              const lastDelimiter = Math.max(
+                newContent.lastIndexOf('。'),
+                newContent.lastIndexOf('！'),
+                newContent.lastIndexOf('？'),
+                newContent.lastIndexOf('\n')
+              )
+
+              if (lastDelimiter !== -1) {
+                toSend = newContent.substring(0, lastDelimiter + 1)
+                newSentIndex = sentIndex + toSend.length
+              }
+            }
+          }
+
+          if (toSend) {
+            const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
+            if (bot) {
+              await bot.sendMessage(sessionState.channelId, toSend, sessionState.guildId)
+              sessionState.streamBufferSentIndex = newSentIndex
+              sessionState.hasStreamed = true
+            }
+          }
+        }
+
+        if (isStepFinish) {
+          shouldSend = false // We handled it
+        }
+      }
+    }
+
     if (shouldSend && finalContent) {
-      const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
-      if (bot) {
-        bot.sendMessage(sessionState!.channelId, finalContent, sessionState!.guildId)
-      } else {
-        ctx.logger.warn(`Bot not found for session ${sessionKey}`)
+      // Legacy fallback or non-streaming parts (tools, etc)
+      // If native streaming handled step-finish via edit, we skipped this.
+      // If segment streaming handled step-finish via send, we skipped this.
+      // BUT if streaming is disabled, we fall through here.
+
+      if (!enableStreaming || (part.type !== 'text' && part.type !== 'reasoning' && part.type !== 'step-finish')) {
+        const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
+        if (bot) {
+          await bot.sendMessage(sessionState!.channelId, finalContent, sessionState!.guildId)
+        } else {
+          ctx.logger.warn(`Bot not found for session ${sessionKey}`)
+        }
       }
     }
   } else {
@@ -968,18 +1175,42 @@ async function handleSessionStatus(ctx: Context, event: any) {
   ctx.logger.info(`Session ${sessionId} ${status} now`)
 
   if (status === 'idle') {
-    if (sessionState.opencodeMessageId) {
-      messageIdToSessionKey.delete(sessionState.opencodeMessageId)
+    if (sessionState) {
+      sessionState.status = 'idle'
+      activeSessions.set(sessionKey, sessionState)
     }
-    activeSessions.delete(sessionKey)
-    ctx.logger.info(`Session ${sessionId} idle and removed from active tracking`)
+    // Don't delete here, let the main loop handle cleanup and final reporting
+    ctx.logger.info(`Session ${sessionId} idle (marked for commands to pick up)`)
   } else {
-    ctx.logger.info(`Session ${sessionId} status: ${status} (not removing from tracking)`)
+    if (sessionState) {
+      sessionState.status = status
+      activeSessions.set(sessionKey, sessionState)
+    }
+    ctx.logger.info(`Session ${sessionId} status: ${status}`)
   }
 }
 
 async function handleMessageUpdated(ctx: Context, event: any) {
-  ctx.logger.info(`Message updated: ${event.properties.info?.id}`)
+  const msgId = event.properties.info?.id
+  const role = event.properties.info?.role
+
+  ctx.logger.info(`Message updated: ${msgId} (Role: ${role})`)
+
+  if (msgId && role) {
+    // Find session and update role map
+    const sessionId = event.properties.sessionID || event.properties.info?.sessionID
+    if (sessionId) {
+      for (const state of Array.from(activeSessions.values())) {
+        if (state.sessionId === sessionId) {
+          if (!state.messageRoles) {
+            state.messageRoles = new Map()
+          }
+          state.messageRoles.set(msgId, role)
+          break
+        }
+      }
+    }
+  }
 }
 
 async function handleSessionError(ctx: Context, event: any) {
@@ -1004,14 +1235,17 @@ async function handleSessionError(ctx: Context, event: any) {
   const errData = event.properties.error
   const errMessage = errData?.message || event.properties.error?.message || JSON.stringify(event.properties.error)
 
+  // Mark session as error for main loop
+  if (sessionState) {
+    sessionState.status = 'error'
+    activeSessions.set(sessionKey, sessionState)
+  }
+
   const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
   if (bot) {
     bot.sendMessage(sessionState!.channelId, `❌ 会话错误: ${errMessage}`, sessionState!.guildId)
   }
 
-  if (sessionState.opencodeMessageId) {
-    messageIdToSessionKey.delete(sessionState.opencodeMessageId)
-  }
-  activeSessions.delete(sessionKey)
-  ctx.logger.error(`Session ${sessionId} error: ${errMessage} - removing from active tracking`)
+  // Don't delete immediately, let loop handle it
+  ctx.logger.error(`Session ${sessionId} error: ${errMessage}`)
 }
