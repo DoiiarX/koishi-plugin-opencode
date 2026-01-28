@@ -73,7 +73,7 @@ interface SessionState {
   lastStreamTime?: number
   lastStreamMessageId?: string // For native mode
   streamBufferSentIndex?: number // For segment mode: how many chars have been sent
-  streamMode?: 'native' | 'segment' // Resolved mode for this session
+  streamMode?: 'native' | 'segment' | 'auto' // Resolved mode for this session
 
   // Role tracking
   messageRoles?: Map<string, string> // messageId -> role
@@ -921,21 +921,22 @@ async function handlePartUpdated(ctx: Context, event: any, config: Config) {
   if (messageId && sessionState.messageRoles) {
     const role = sessionState.messageRoles.get(messageId)
     if (role === 'user') {
-      // ctx.logger.debug(`Skipping part update for user message: ${messageId}`)
       return
     }
   }
 
   // Handle message buffering
+  let shouldSend = false
+  let finalContent = ''
+  let isStepFinish = false
+  let current: { text?: string; reasoning?: string } = {}
+
   if (messageId) {
     if (!sessionState.partialMessages) {
       sessionState.partialMessages = new Map()
     }
 
-    let current = sessionState.partialMessages.get(messageId) || {}
-    let shouldSend = false
-    let finalContent = ''
-    let isStepFinish = false
+    current = sessionState.partialMessages.get(messageId) || {}
 
     if (part.type === 'text') {
       current.text = part.text
@@ -956,9 +957,6 @@ async function handlePartUpdated(ctx: Context, event: any, config: Config) {
       }
 
       finalContent = parts.join('\n\n')
-      // Note: We don't delete partialMessages here immediately if we want to support further updates? 
-      // But step-finish usually means done. 
-      // Safe to keep it until session cleanup or next overwrite.
     } else if (part.type === 'tool') {
       if (showToolMessages) {
         const callId = part.callID || 'unknown'
@@ -1000,131 +998,35 @@ async function handlePartUpdated(ctx: Context, event: any, config: Config) {
       }
       const fullContent = parts.join('\n\n')
 
-      if (!fullContent) return
-
-      // Determine streaming mode if not set
-      if (!sessionState.streamMode) {
-        const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
-        if (streamModeConfig === 'native') {
-          sessionState.streamMode = 'native'
-        } else if (streamModeConfig === 'segment') {
-          sessionState.streamMode = 'segment'
-        } else {
-          // Auto detection
-          if (bot && typeof bot.editMessage === 'function') {
-            sessionState.streamMode = 'native'
-          } else {
-            sessionState.streamMode = 'segment'
-          }
-        }
-      }
-
-      // Native Streaming (Edit Message)
-      if (sessionState.streamMode === 'native') {
-        const now = Date.now()
-        const lastTime = sessionState.lastStreamTime || 0
-
-        // Conditions: 
-        // 1. Is step finish (always send final state)
-        // 2. Or throttle interval passed AND we have a message to edit
-        // 3. Or we haven't sent anything yet (first message)
-
-        if (isStepFinish || (now - lastTime > streamInterval) || !sessionState.lastStreamMessageId) {
+      if (fullContent) {
+        // Determine streaming mode if not set
+        if (!sessionState.streamMode) {
           const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
-          if (bot) {
-            try {
-              if (sessionState.lastStreamMessageId) {
-                await bot.editMessage(sessionState.channelId, sessionState.lastStreamMessageId, fullContent)
-                sessionState.lastStreamTime = now
-                sessionState.hasStreamed = true
-              } else {
-                const sentIds = await bot.sendMessage(sessionState.channelId, fullContent, sessionState.guildId)
-                if (sentIds && sentIds.length > 0) {
-                  sessionState.lastStreamMessageId = sentIds[0]
-                  sessionState.lastStreamTime = now
-                  sessionState.hasStreamed = true
-                }
-                sessionState.hasStreamed = true
-              }
-            } catch (err) {
-              ctx.logger.warn(`Native streaming failed, downgrading to segment mode:`, err)
-              sessionState.streamMode = 'segment'
-              sessionState.streamBufferSentIndex = 0 // Reset sent index?? 
-              // Actually if native failed, we might have sent nothing or half. 
-              // Safer to just let segment mode handle from now on.
-              // If we already sent something via native, segment mode might duplicate? 
-              // We assume we start segmenting from the *rest*.
-              // Ideally validation: if lastStreamMessageId exists, maybe we just append new segments?
-              // Let's set sentIndex to current length roughly to avoid huge dupes if edit failed but msg exists?
-              // No, if edit failed, user sees old msg. We should probably append new chunks.
-              sessionState.streamBufferSentIndex = fullContent.length
-            }
-          }
-        }
-
-        // If native, we effectively "handled" the sending (even if throttled, we wait).
-        // So we suppress the default "shouldSend" for step-finish if we handled it here?
-        // Yes, if isStepFinish, we edited above. So set shouldSend = false to avoid double send below.
-        if (isStepFinish && sessionState.lastStreamMessageId) {
-          shouldSend = false
-        }
-      }
-
-      // Segmented Streaming
-      else if (sessionState.streamMode === 'segment') {
-        const sentIndex = sessionState.streamBufferSentIndex || 0
-        const newContent = fullContent.substring(sentIndex)
-
-        if (newContent) {
-          let toSend = ''
-          let newSentIndex = sentIndex
-
-          if (isStepFinish) {
-            // Send everything remaining
-            toSend = newContent
-            newSentIndex = fullContent.length
+          if (streamModeConfig === 'native') {
+            sessionState.streamMode = 'native'
+          } else if (streamModeConfig === 'segment') {
+            sessionState.streamMode = 'segment'
           } else {
-            // Check for sentence boundaries
-            // Matches common sentence endings, newlines
-            const match = newContent.match(/([。！？\n]+)/g)
-            if (match) {
-              // Find the last index of a delimiter
-              const lastDelimiter = Math.max(
-                newContent.lastIndexOf('。'),
-                newContent.lastIndexOf('！'),
-                newContent.lastIndexOf('？'),
-                newContent.lastIndexOf('\n')
-              )
-
-              if (lastDelimiter !== -1) {
-                toSend = newContent.substring(0, lastDelimiter + 1)
-                newSentIndex = sentIndex + toSend.length
-              }
-            }
-          }
-
-          if (toSend) {
-            const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
-            if (bot) {
-              await bot.sendMessage(sessionState.channelId, toSend, sessionState.guildId)
-              sessionState.streamBufferSentIndex = newSentIndex
-              sessionState.hasStreamed = true
+            // Auto detection
+            if (bot && typeof bot.editMessage === 'function') {
+              sessionState.streamMode = 'native'
+            } else {
+              sessionState.streamMode = 'segment'
             }
           }
         }
 
-        if (isStepFinish) {
-          shouldSend = false // We handled it
+        if (sessionState.streamMode === 'native') {
+          const handled = await handleNativeStreaming(ctx, sessionState, fullContent, streamInterval, isStepFinish)
+          if (handled) shouldSend = false
+        } else if (sessionState.streamMode === 'segment') {
+          const handled = await handleSegmentedStreaming(ctx, sessionState, fullContent, isStepFinish)
+          if (handled) shouldSend = false
         }
       }
     }
 
     if (shouldSend && finalContent) {
-      // Legacy fallback or non-streaming parts (tools, etc)
-      // If native streaming handled step-finish via edit, we skipped this.
-      // If segment streaming handled step-finish via send, we skipped this.
-      // BUT if streaming is disabled, we fall through here.
-
       if (!enableStreaming || (part.type !== 'text' && part.type !== 'reasoning' && part.type !== 'step-finish')) {
         const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
         if (bot) {
@@ -1135,13 +1037,12 @@ async function handlePartUpdated(ctx: Context, event: any, config: Config) {
       }
     }
   } else {
-    // Fallback for events without messageId (unlikely for parts?)
-    // Just send properly formatted part
+    // Fallback for events without messageId
     const formattedMessage = formatPart(part, showReasoning)
     if (formattedMessage) {
       const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
       if (bot) {
-        bot.sendMessage(sessionState!.channelId, formattedMessage, sessionState!.guildId)
+        await bot.sendMessage(sessionState!.channelId, formattedMessage, sessionState!.guildId)
       }
     }
   }
@@ -1149,6 +1050,97 @@ async function handlePartUpdated(ctx: Context, event: any, config: Config) {
   // Update last activity
   sessionState.lastActivity = Date.now()
   activeSessions.set(sessionKey!, sessionState)
+}
+
+async function handleNativeStreaming(
+  ctx: Context,
+  sessionState: SessionState,
+  fullContent: string,
+  streamInterval: number,
+  isStepFinish: boolean
+): Promise<boolean> {
+  const now = Date.now()
+  const lastTime = sessionState.lastStreamTime || 0
+  let handled = false
+
+  if (isStepFinish || (now - lastTime > streamInterval) || !sessionState.lastStreamMessageId) {
+    const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
+    if (bot) {
+      try {
+        if (sessionState.lastStreamMessageId) {
+          await bot.editMessage(sessionState.channelId, sessionState.lastStreamMessageId, fullContent)
+          sessionState.lastStreamTime = now
+          sessionState.hasStreamed = true
+        } else {
+          const sentIds = await bot.sendMessage(sessionState.channelId, fullContent, sessionState.guildId)
+          if (sentIds && sentIds.length > 0) {
+            sessionState.lastStreamMessageId = sentIds[0]
+            sessionState.lastStreamTime = now
+            sessionState.hasStreamed = true
+          }
+        }
+      } catch (err) {
+        ctx.logger.warn(`Native streaming failed, downgrading to segment mode:`, err)
+        sessionState.streamMode = 'segment'
+        sessionState.streamBufferSentIndex = fullContent.length
+      }
+    }
+  }
+
+  if (isStepFinish && sessionState.lastStreamMessageId) {
+    handled = true
+  }
+  return handled
+}
+
+async function handleSegmentedStreaming(
+  ctx: Context,
+  sessionState: SessionState,
+  fullContent: string,
+  isStepFinish: boolean
+): Promise<boolean> {
+  const sentIndex = sessionState.streamBufferSentIndex || 0
+  const newContent = fullContent.substring(sentIndex)
+  let handled = false
+
+  if (newContent) {
+    let toSend = ''
+    let newSentIndex = sentIndex
+
+    if (isStepFinish) {
+      toSend = newContent
+      newSentIndex = fullContent.length
+    } else {
+      // Check for sentence boundaries
+      if (true) {
+        const lastDelimiter = Math.max(
+          newContent.lastIndexOf('。'),
+          newContent.lastIndexOf('！'),
+          newContent.lastIndexOf('？'),
+          newContent.lastIndexOf('\n')
+        )
+
+        if (lastDelimiter !== -1) {
+          toSend = newContent.substring(0, lastDelimiter + 1)
+          newSentIndex = sentIndex + toSend.length
+        }
+      }
+    }
+
+    if (toSend) {
+      const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
+      if (bot) {
+        await bot.sendMessage(sessionState.channelId, toSend, sessionState.guildId)
+        sessionState.streamBufferSentIndex = newSentIndex
+        sessionState.hasStreamed = true
+      }
+    }
+  }
+
+  if (isStepFinish) {
+    handled = true
+  }
+  return handled
 }
 
 
@@ -1243,7 +1235,7 @@ async function handleSessionError(ctx: Context, event: any) {
 
   const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
   if (bot) {
-    bot.sendMessage(sessionState!.channelId, `❌ 会话错误: ${errMessage}`, sessionState!.guildId)
+    await bot.sendMessage(sessionState!.channelId, `❌ 会话错误: ${errMessage}`, sessionState!.guildId)
   }
 
   // Don't delete immediately, let loop handle it
