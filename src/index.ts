@@ -94,8 +94,8 @@ interface SessionState {
   messageRoles?: Map<string, string> // messageId -> role
 
   // Deduplication tracking
-  sentFinalMessages?: Set<string> // messageId for step-finish
-  sentToolCalls?: Set<string> // part.id or callID:status
+  sentFinalMessages: Set<string> // messageId for step-finish
+  sentToolCalls: Set<string> // part.id or callID:status
 
   // Lifecycle
   status?: string // 'idle', 'busy', 'error', etc.
@@ -398,7 +398,9 @@ export function apply(ctx: Context, config: Config) {
           selfId: chatbotSession.selfId,
           lastActivity: Date.now(),
           partialMessages: new Map(),
-          toolStates: new Map()
+          toolStates: new Map(),
+          sentFinalMessages: new Set(),
+          sentToolCalls: new Set()
         })
         ctx.logger.info(`会话已添加到活跃追踪: ${sessionKey}`)
 
@@ -1047,10 +1049,6 @@ async function handlePartUpdated(ctx: Context, event: any, config: Config) {
     return
   }
 
-  // Initialize tracking sets if they don't exist
-  if (!sessionState.sentFinalMessages) sessionState.sentFinalMessages = new Set()
-  if (!sessionState.sentToolCalls) sessionState.sentToolCalls = new Set()
-
   // Role Filtering: Ignore parts from 'user' messages
   if (messageId && sessionState.messageRoles) {
     const role = sessionState.messageRoles.get(messageId)
@@ -1202,8 +1200,7 @@ async function handlePartUpdated(ctx: Context, event: any, config: Config) {
       if (!sessionState.sentToolCalls.has(partId)) {
         const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
         if (bot) {
-          let toSend = formattedMessage
-          await bot.sendMessage(sessionState!.channelId, toSend, sessionState!.guildId)
+          await bot.sendMessage(sessionState!.channelId, formattedMessage, sessionState!.guildId)
           sessionState.sentToolCalls.add(partId)
           sessionState.hasStreamed = true
         }
