@@ -52,10 +52,11 @@ plugins:
 | `model` | string | - | 覆盖默认模型（格式：`provider/model`） |
 | `timeout` | number | `30000` | 消息生成超时时间（毫秒） |
 | `authority` | number | `1` | 命令所需权限等级 |
+| `showReasoning` | boolean | `true` | 是否显示 agent 的推理过程 |
+| `showToolMessages` | boolean | `true` | 是否显示工具调用消息 |
 | `enableStreaming` | boolean | `true` | 是否开启流式输出 |
 | `streamMode` | string | `auto` | 流式输出模式 (`auto`/`native`/`segment`) |
 | `streamInterval` | number | `500` | 流式更新间隔（毫秒） |
-| `showToolMessages` | boolean | `true` | 是否显示工具调用消息 |
 
 ## 命令
 
@@ -84,6 +85,17 @@ oc.h
 oc.h
 ```
 
+#### 检查流式输出状态
+```
+oc.stream.status
+```
+检查当前的流式输出状态、模式和更新间隔。
+
+**示例：**
+```
+oc.stream.status
+```
+
 ### 模型管理
 
 #### 列出模型
@@ -96,6 +108,17 @@ oc.m [关键词]
 **示例：**
 ```
 oc.models claude
+```
+
+#### 列出 Agent
+```
+oc.agents
+```
+列出所有可用的 AI Agent。
+
+**示例：**
+```
+oc.agents
 ```
 
 #### 设置默认模型
@@ -147,6 +170,17 @@ oc.sdel <id>
 ```
 删除指定会话。
 
+#### 查看消息历史
+```
+oc.session.messages [页码]
+```
+查看当前会话中的用户消息历史（每页 5 条）。
+
+**示例：**
+```
+oc.session.messages 1
+```
+
 ## 权限等级
 
 不同命令有不同的默认权限等级：
@@ -155,7 +189,9 @@ oc.sdel <id>
 |---------------|-----------------|
 | 基础命令 | 1 |
 | 查看会话信息 | 1 |
+| 查看消息历史 | 1 |
 | 列出模型 | 1 |
+| 列出 Agent | 1 |
 | 切换会话 | 2 |
 | 设置模型 | 3 |
 | 列出会话 | 3 |

@@ -52,10 +52,11 @@ plugins:
 | `model` | string | - | Override default model (format: `provider/model`) |
 | `timeout` | number | `30000` | Message generation timeout in milliseconds |
 | `authority` | number | `1` | Required permission level for commands |
+| `showReasoning` | boolean | `true` | Show agent's reasoning process |
+| `showToolMessages` | boolean | `true` | Show tool execution messages |
 | `enableStreaming` | boolean | `true` | Enable streaming output |
 | `streamMode` | string | `auto` | Streaming mode (`auto`/`native`/`segment`) |
 | `streamInterval` | number | `500` | Streaming update interval (ms) |
-| `showToolMessages` | boolean | `true` | Show tool execution messages |
 
 ## Commands
 
@@ -109,6 +110,17 @@ List all available models. Optionally filter by keyword.
 oc.models claude
 ```
 
+#### List Agents
+```
+oc.agents
+```
+List all available AI agents.
+
+**Example:**
+```
+oc.agents
+```
+
 #### Set Default Model
 ```
 oc.model.set <model>
@@ -156,6 +168,17 @@ View information about the current session.
 oc.session.delete <id>
 oc.sdel <id>
 ```
+
+#### View Message History
+```
+oc.session.messages [page]
+```
+View user message history in current session with pagination (5 messages per page).
+
+**Example:**
+```
+oc.session.messages 1
+```
 ## Permissions
 
 Different commands have different default authority levels:
@@ -164,7 +187,9 @@ Different commands have different default authority levels:
 |---------------|-----------------|
 | Basic Commands | 1 |
 | Session Info | 1 |
+| View Message History | 1 |
 | List Models | 1 |
+| List Agents | 1 |
 | Switch Session | 2 |
 | Set Model | 3 |
 | List Sessions | 3 |
