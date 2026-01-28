@@ -39,6 +39,8 @@ plugins:
     model: ""
     # 生成超时时间（毫秒，默认 30000）
     timeout: 30000
+    # 显示 agent 的推理过程（默认 true）
+    showReasoning: true
     # 命令所需权限等级（默认 1）
     authority: 1
 ```
@@ -51,6 +53,7 @@ plugins:
 | `defaultSession` | string | - | 所有用户的默认会话 ID |
 | `model` | string | - | 覆盖默认模型（格式：`provider/model`） |
 | `timeout` | number | `30000` | 消息生成超时时间（毫秒） |
+| `showReasoning` | boolean | `true` | 显示 agent 的推理过程 |
 | `authority` | number | `1` | 命令所需权限等级 |
 
 ## 命令
@@ -143,6 +146,25 @@ oc.sdel <id>
 ```
 删除指定会话。
 
+#### 查看消息历史
+```
+oc.session.messages [页码]
+```
+查看当前会话的消息历史。显示分页的用户消息列表。
+
+**示例：**
+```
+oc.session.messages 1
+```
+
+### 其他命令
+
+#### 列出 Agents
+```
+oc.agents
+```
+列出所有可用的 OpenCode agents。
+
 ## 权限等级
 
 不同命令有不同的默认权限等级：
@@ -152,6 +174,8 @@ oc.sdel <id>
 | 基础命令 | 1 |
 | 查看会话信息 | 1 |
 | 列出模型 | 1 |
+| 查看消息历史 | 1 |
+| 列出 Agents | 1 |
 | 切换会话 | 2 |
 | 设置模型 | 3 |
 | 列出会话 | 3 |

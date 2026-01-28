@@ -39,6 +39,8 @@ plugins:
     model: ""
     # Generation timeout in milliseconds (default: 30000)
     timeout: 30000
+    # Show agent's reasoning process (default: true)
+    showReasoning: true
     # Required permission level for commands (default: 1)
     authority: 1
 ```
@@ -51,6 +53,7 @@ plugins:
 | `defaultSession` | string | - | Default session ID for all users |
 | `model` | string | - | Override default model (format: `provider/model`) |
 | `timeout` | number | `30000` | Message generation timeout in milliseconds |
+| `showReasoning` | boolean | `true` | Show agent's reasoning process |
 | `authority` | number | `1` | Required permission level for commands |
 
 ## Commands
@@ -141,6 +144,27 @@ View information about the current session.
 oc.session.delete <id>
 oc.sdel <id>
 ```
+Delete a specific session.
+
+#### View Message History
+```
+oc.session.messages [page]
+```
+View message history for current session. Displays paginated list of user messages.
+
+**Example:**
+```
+oc.session.messages 1
+```
+
+### Other Commands
+
+#### List Agents
+```
+oc.agents
+```
+List all available OpenCode agents.
+
 ## Permissions
 
 Different commands have different default authority levels:
@@ -150,6 +174,8 @@ Different commands have different default authority levels:
 | Basic Commands | 1 |
 | Session Info | 1 |
 | List Models | 1 |
+| View Message History | 1 |
+| List Agents | 1 |
 | Switch Session | 2 |
 | Set Model | 3 |
 | List Sessions | 3 |
