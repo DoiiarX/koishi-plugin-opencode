@@ -387,8 +387,10 @@ export function apply(ctx: Context, config: Config) {
         const senderName = chatbotSession.username || chatbotSession.author?.name || chatbotSession.userId
         const contextHeader = `[User: ${senderName} (ID: ${chatbotSession.userId}) | Platform: ${chatbotSession.platform}]`
 
-        // Register session BEFORE prompt to avoid race conditions with incoming events
-        activeSessions.set(sessionKey, {
+        // Register or merge session state
+        const existingState = activeSessions.get(sessionKey)
+        const newState: SessionState = {
+          ...existingState,
           sessionId: opencodeSession.id,
           platform: chatbotSession.platform,
           userId: chatbotSession.userId,
@@ -397,12 +399,18 @@ export function apply(ctx: Context, config: Config) {
           guildId: chatbotSession.guildId,
           selfId: chatbotSession.selfId,
           lastActivity: Date.now(),
-          partialMessages: new Map(),
-          toolStates: new Map(),
-          sentFinalMessages: new Set(),
-          sentToolCalls: new Set()
-        })
-        ctx.logger.info(`会话已添加到活跃追踪: ${sessionKey}`)
+          partialMessages: existingState?.partialMessages || new Map(),
+          toolStates: existingState?.toolStates || new Map(),
+          sentFinalMessages: existingState?.sentFinalMessages || new Set(),
+          sentToolCalls: existingState?.sentToolCalls || new Set(),
+          // Don't reset hasStreamed if we are in the middle of a continuous session, 
+          // but for a NEW user message, we might want to reset certain streaming markers
+          streamBufferSentIndex: 0,
+          lastStreamMessageId: undefined,
+          hasStreamed: false
+        }
+        activeSessions.set(sessionKey, newState)
+        ctx.logger.info(`会话状态已初始化或合并: ${sessionKey}`)
 
         if (config.showProcessingMessage ?? true) {
           await chatbotSession.send(`🔄 正在处理: ${message.substring(0, 30)}...`)
@@ -1170,6 +1178,13 @@ async function handlePartUpdated(ctx: Context, event: any, config: Config) {
           const handled = await handleSegmentedStreaming(ctx, sessionState, fullContent, isStepFinish)
           if (handled) shouldSend = false
         }
+
+        // If this is the final part of a step, ensure we mark as streamed
+        // to prevent the main loop from sending a fallback message.
+        if (isStepFinish && (sessionState.streamMode === 'native' || sessionState.streamMode === 'segment')) {
+          sessionState.hasStreamed = true
+          if (messageId) sessionState.sentFinalMessages.add(messageId)
+        }
       }
     }
 
@@ -1248,7 +1263,8 @@ async function handleNativeStreaming(
     }
   }
 
-  if (isStepFinish && sessionState.lastStreamMessageId) {
+  if (isStepFinish) {
+    sessionState.hasStreamed = true
     handled = true
   }
   return handled
@@ -1333,6 +1349,7 @@ async function handleSegmentedStreaming(
   }
 
   if (isStepFinish) {
+    sessionState.hasStreamed = true
     handled = true
   }
   return handled
