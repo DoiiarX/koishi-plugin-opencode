@@ -369,7 +369,9 @@ export function apply(ctx: Context, config: Config) {
     .action(async ({ session: chatbotSession }, ...messageParts) => {
       const message = messageParts.join(' ')
       if (!message.trim()) return // Ignore empty messages
-      const sessionKey = `${chatbotSession.platform}-${chatbotSession.userId}`
+      const directory = config.directory || 'default'
+      const dirHash = simpleHash(directory)
+      const sessionKey = `${chatbotSession.platform}-${chatbotSession.userId}-${dirHash}`
 
       try {
         const opencodeClient = await ensureClient()
@@ -852,7 +854,9 @@ async function getOrCreateSession(
   chatbotSession: any,
   config: Config,
 ): Promise<any> {
-  const sessionKey = `${chatbotSession.platform}-${chatbotSession.userId}`
+  const directory = config.directory || 'default'
+  const dirHash = simpleHash(directory)
+  const sessionKey = `${chatbotSession.platform}-${chatbotSession.userId}-${dirHash}`
   const cachedId = sessionCache.get(sessionKey)
 
   // 1. Try cache
@@ -870,7 +874,7 @@ async function getOrCreateSession(
   }
 
   // 2. Try to find existing session by Title keys
-  const titlePrefix = `Koishi-${chatbotSession.platform}-${chatbotSession.userId}`
+  const titlePrefix = `Koishi-${chatbotSession.platform}-${chatbotSession.userId}-${dirHash}`
   try {
     const { data: sessions } = await client.session.list()
     // Find all sessions with matching prefix
