@@ -1256,15 +1256,14 @@ async function handleNativeStreaming(
 ): Promise<void> {
   // 1. Check if already updating
   if (sessionState.isUpdating) {
-    if (isStepFinish) sessionState.hasPendingUpdate = true // Ensure final update is queued
-    else sessionState.hasPendingUpdate = true
+    sessionState.hasPendingUpdate = true
     return
   }
 
   const now = Date.now()
   const lastTime = sessionState.lastStreamTime || 0
 
-  // 2. Initial trigger check
+  // 2. Initial trigger check: Don't skip if message hasn't been created yet
   if (!isStepFinish && (now - lastTime < streamInterval) && sessionState.lastStreamMessageId) {
     return
   }
@@ -1272,17 +1271,14 @@ async function handleNativeStreaming(
   sessionState.isUpdating = true
 
   try {
-    // 3. Update Loop: Keep updating until no more pending updates
+    // 3. Update Loop
     while (true) {
       sessionState.hasPendingUpdate = false
 
-      // Re-compose the latest full content from memory
       const current = sessionState.partialMessages?.get(messageId)
       if (!current) break
 
       const parts: string[] = []
-      // Use the same reasoning/processing flags from the higher context if possible
-      // (For simplicity here we re-evaluate showReasoning - in a real refactor we might pass flags)
       const config = ctx.config as Config
       if (config.showReasoning && current.reasoning) {
         parts.push(`🤔 思考: ${current.reasoning}`)
@@ -1294,18 +1290,44 @@ async function handleNativeStreaming(
 
       if (!latestFullContent) break
 
+      // Tag Integrity & Standalone Media Detection
+      const incompleteTagRegex = /<[a-zA-Z][^>]*$/
+      const standaloneMediaRegex = /^\s*<(img|audio|video|file)[^>]*\/>\s*$/i
+
+      const isStandaloneMedia = !current.reasoning && standaloneMediaRegex.test(latestFullContent.trim())
+      const isTagIncomplete = incompleteTagRegex.test(latestFullContent)
+
+      // Skip if tag is cut off, unless it's the very end
+      if (isTagIncomplete && !isStepFinish) {
+        sessionState.hasPendingUpdate = true
+        break
+      }
+
       const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
       if (!bot) break
 
       try {
         const processedContent = await processAssets(ctx, latestFullContent)
 
-        // Deduplication
-        if (processedContent === sessionState.lastSentContent && !isStepFinish) {
-          // If no change and not finished, we can wait. 
-          // But if we're in the loop, maybe something changed but processAssets stripped it?
+        if (isStandaloneMedia) {
+          // Case A: Standalone Media - Send as new message to ensure platform rendering
+          try {
+            await bot.sendMessage(sessionState.channelId, h.parse(processedContent), sessionState.guildId)
+            sessionState.lastSentContent = processedContent
+            sessionState.lastStreamTime = Date.now()
+            sessionState.hasStreamed = true
+            sessionState.streamErrorCount = 0
+            sessionState.lastStreamMessageId = undefined // Cut off for subsequent text
+            if (!isStepFinish) break
+          } catch (sendErr) {
+            ctx.logger.error(`Failed to send standalone media:`, sendErr)
+            break
+          }
         } else {
-          if (sessionState.lastStreamMessageId) {
+          // Case B: Normal Edit or First Message
+          if (processedContent === sessionState.lastSentContent && !isStepFinish) {
+            // Deduplication
+          } else if (sessionState.lastStreamMessageId) {
             try {
               await bot.editMessage(sessionState.channelId, sessionState.lastStreamMessageId, h.parse(processedContent))
               sessionState.lastSentContent = processedContent
@@ -1319,7 +1341,7 @@ async function handleNativeStreaming(
                 await bot.sendMessage(sessionState.channelId, h.parse(processedContent), sessionState.guildId)
                 sessionState.hasStreamed = true
               } else if (sessionState.streamErrorCount >= 3) {
-                throw editErr // Trigger downgrade
+                throw editErr // Trigger mode downgrade
               }
             }
           } else {
@@ -1334,21 +1356,14 @@ async function handleNativeStreaming(
           }
         }
       } catch (err) {
-        ctx.logger.warn(`Native streaming failed after retries, downgrading to segment mode:`, err)
+        ctx.logger.warn(`Native streaming failed, downgrading to segment mode:`, err)
         sessionState.streamMode = 'segment'
         sessionState.streamBufferSentIndex = sessionState.lastSentContent?.length || 0
-        break // Exit loop on downgrade
+        break
       }
 
-      // Exit loop if no more pending updates arrive during the network call
-      // AND we are not at the final stage
       if (!sessionState.hasPendingUpdate && !isStepFinish) break
-
-      // If it's step finish, we might want one last check of hasPendingUpdate 
-      // but usually the finish call itself sets isStepFinish=true
       if (isStepFinish && !sessionState.hasPendingUpdate) break
-
-      // Safety: Add a small sleep between updates to prevent spin locks if network is too fast
       await new Promise(r => setTimeout(r, 100))
     }
   } finally {
