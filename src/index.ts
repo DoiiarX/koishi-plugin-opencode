@@ -7,6 +7,9 @@ declare module 'koishi' {
 }
 
 import { Context, Schema, h } from 'koishi'
+import * as fs from 'fs'
+import * as path from 'path'
+import { fileURLToPath, pathToFileURL } from 'url'
 
 export const name = 'opencode'
 
@@ -95,8 +98,11 @@ interface SessionState {
 
   // Deduplication tracking
   sentFinalMessages: Set<string> // messageId for step-finish
-  sentToolCalls: Set<string> // part.id or callID:status
-
+  sentToolCalls: Set<string> // IDs of sent tool parts
+  lastSentContent?: string // To prevent redundant editMessage calls
+  streamErrorCount?: number // Continuous failure count for native mode
+  isUpdating?: boolean // Background update lock
+  hasPendingUpdate?: boolean // Queued update flag
   // Lifecycle
   status?: string // 'idle', 'busy', 'error', etc.
   hasStreamed?: boolean // Whether we have successfully streamed/edited messages
@@ -373,6 +379,9 @@ export function apply(ctx: Context, config: Config) {
     .action(async ({ session: chatbotSession }, ...messageParts) => {
       const message = messageParts.join(' ')
       if (!message.trim()) return // Ignore empty messages
+
+      ctx.logger.info(`[${chatbotSession.platform}-${chatbotSession.userId}] 发送消息: ${message.substring(0, 50)}...`)
+
       const directory = config.directory || 'default'
       const dirHash = simpleHash(directory)
       const sessionKey = `${chatbotSession.platform}-${chatbotSession.userId}-${dirHash}`
@@ -413,6 +422,7 @@ export function apply(ctx: Context, config: Config) {
         ctx.logger.info(`会话状态已初始化或合并: ${sessionKey}`)
 
         if (config.showProcessingMessage ?? true) {
+          ctx.logger.info(`[${chatbotSession.platform}-${chatbotSession.userId}] 发送消息: ${message.substring(0, 50)}...`)
           await chatbotSession.send(`🔄 正在处理: ${message.substring(0, 30)}...`)
         }
 
@@ -554,7 +564,8 @@ export function apply(ctx: Context, config: Config) {
             if (textParts.length === 0) {
               formattedResponse = '[无响应 - 可能是生成超时或需要更多时间]'
             }
-            await chatbotSession.send(h.parse(formattedResponse))
+            const processedFinal = await processAssets(ctx, formattedResponse)
+            await chatbotSession.send(h.parse(processedFinal))
           }
 
         } finally {
@@ -1088,22 +1099,25 @@ async function handlePartUpdated(ctx: Context, event: any, config: Config) {
       sessionState.partialMessages.set(messageId, current)
     } else if (part.type === 'step-finish') {
       isStepFinish = true
-      shouldSend = true
 
-      if (sessionState.sentFinalMessages.has(messageId)) {
-        shouldSend = false
-        return
-      }
+      if (!enableStreaming) {
+        shouldSend = true
 
-      const parts: string[] = []
-      if (showReasoning && current.reasoning) {
-        parts.push(`🤔 思考: ${current.reasoning}`)
-      }
-      if (current.text) {
-        parts.push(current.text)
-      }
+        if (sessionState.sentFinalMessages.has(messageId)) {
+          shouldSend = false
+          return
+        }
 
-      finalContent = parts.join('\n\n')
+        const parts: string[] = []
+        if (showReasoning && current.reasoning) {
+          parts.push(`🤔 思考: ${current.reasoning}`)
+        }
+        if (current.text) {
+          parts.push(current.text)
+        }
+
+        finalContent = parts.join('\n\n')
+      }
     } else if (part.type === 'tool') {
       if (showToolMessages) {
         const callId = part.callID || 'unknown'
@@ -1174,11 +1188,12 @@ async function handlePartUpdated(ctx: Context, event: any, config: Config) {
         }
 
         if (sessionState.streamMode === 'native') {
-          const handled = await handleNativeStreaming(ctx, sessionState, fullContent, streamInterval, isStepFinish)
-          if (handled) shouldSend = false
+          // Non-blocking: handleNativeStreaming is now responsible for its own loop
+          handleNativeStreaming(ctx, sessionState, messageId, streamInterval, isStepFinish)
+          if (isStepFinish) shouldSend = false
         } else if (sessionState.streamMode === 'segment') {
-          const handled = await handleSegmentedStreaming(ctx, sessionState, fullContent, isStepFinish)
-          if (handled) shouldSend = false
+          await handleSegmentedStreaming(ctx, sessionState, fullContent, isStepFinish)
+          if (isStepFinish) shouldSend = false
         }
 
         // If this is the final part of a step, ensure we mark as streamed
@@ -1194,7 +1209,8 @@ async function handlePartUpdated(ctx: Context, event: any, config: Config) {
       if (!enableStreaming || (part.type !== 'text' && part.type !== 'reasoning' && part.type !== 'step-finish')) {
         const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
         if (bot) {
-          await bot.sendMessage(sessionState!.channelId, finalContent, sessionState!.guildId)
+          const processedFinal = await processAssets(ctx, finalContent)
+          await bot.sendMessage(sessionState!.channelId, h.parse(processedFinal), sessionState!.guildId)
           sessionState.hasStreamed = true
 
           // Mark as sent
@@ -1217,7 +1233,8 @@ async function handlePartUpdated(ctx: Context, event: any, config: Config) {
       if (!sessionState.sentToolCalls.has(partId)) {
         const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
         if (bot) {
-          await bot.sendMessage(sessionState!.channelId, formattedMessage, sessionState!.guildId)
+          const processedFallback = await processAssets(ctx, formattedMessage)
+          await bot.sendMessage(sessionState!.channelId, h.parse(processedFallback), sessionState!.guildId)
           sessionState.sentToolCalls.add(partId)
           sessionState.hasStreamed = true
         }
@@ -1233,43 +1250,165 @@ async function handlePartUpdated(ctx: Context, event: any, config: Config) {
 async function handleNativeStreaming(
   ctx: Context,
   sessionState: SessionState,
-  fullContent: string,
+  messageId: string,
   streamInterval: number,
   isStepFinish: boolean
-): Promise<boolean> {
+): Promise<void> {
+  // 1. Check if already updating
+  if (sessionState.isUpdating) {
+    sessionState.hasPendingUpdate = true
+    return
+  }
+
   const now = Date.now()
   const lastTime = sessionState.lastStreamTime || 0
-  let handled = false
 
-  if (isStepFinish || (now - lastTime > streamInterval) || !sessionState.lastStreamMessageId) {
-    const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
-    if (bot) {
+  // 2. Initial trigger check: Don't skip if message hasn't been created yet
+  if (!isStepFinish && (now - lastTime < streamInterval) && sessionState.lastStreamMessageId) {
+    return
+  }
+
+  sessionState.isUpdating = true
+
+  try {
+    // 3. Update Loop
+    while (true) {
+      sessionState.hasPendingUpdate = false
+
+      const current = sessionState.partialMessages?.get(messageId)
+      if (!current) break
+
+      const parts: string[] = []
+      const config = ctx.config as Config
+      if (config.showReasoning && current.reasoning) {
+        parts.push(`🤔 思考: ${current.reasoning}`)
+      }
+      if (current.text) {
+        parts.push(current.text)
+      }
+      const latestFullContent = parts.join('\n\n')
+
+      if (!latestFullContent) break
+
+      // Tag Integrity & Standalone Media Detection
+      const incompleteTagRegex = /<[a-zA-Z][^>]*$/
+      const standaloneMediaRegex = /^\s*<(img|audio|video|file)[^>]*\/>\s*$/i
+
+      const isStandaloneMedia = !current.reasoning && standaloneMediaRegex.test(latestFullContent.trim())
+      const isTagIncomplete = incompleteTagRegex.test(latestFullContent)
+
+      // Skip if tag is cut off, unless it's the very end
+      if (isTagIncomplete && !isStepFinish) {
+        sessionState.hasPendingUpdate = true
+        break
+      }
+
+      const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
+      if (!bot) break
+
       try {
-        if (sessionState.lastStreamMessageId) {
-          await bot.editMessage(sessionState.channelId, sessionState.lastStreamMessageId, h.parse(fullContent))
-          sessionState.lastStreamTime = now
-          sessionState.hasStreamed = true
-        } else {
-          const sentIds = await bot.sendMessage(sessionState.channelId, h.parse(fullContent), sessionState.guildId)
-          if (sentIds && sentIds.length > 0) {
-            sessionState.lastStreamMessageId = sentIds[0]
-            sessionState.lastStreamTime = now
+        const processedContent = await processAssets(ctx, latestFullContent)
+
+        if (isStandaloneMedia) {
+          // Case A: Standalone Media - Send as new message to ensure platform rendering
+          try {
+            await bot.sendMessage(sessionState.channelId, h.parse(processedContent), sessionState.guildId)
+            sessionState.lastSentContent = processedContent
+            sessionState.lastStreamTime = Date.now()
             sessionState.hasStreamed = true
+            sessionState.streamErrorCount = 0
+            sessionState.lastStreamMessageId = undefined // Cut off for subsequent text
+            if (!isStepFinish) break
+          } catch (sendErr) {
+            ctx.logger.error(`Failed to send standalone media:`, sendErr)
+            break
+          }
+        } else {
+          // Case B: Normal Edit or First Message
+          if (processedContent === sessionState.lastSentContent && !isStepFinish) {
+            // Deduplication
+          } else if (sessionState.lastStreamMessageId) {
+            try {
+              await bot.editMessage(sessionState.channelId, sessionState.lastStreamMessageId, h.parse(processedContent))
+              sessionState.lastSentContent = processedContent
+              sessionState.lastStreamTime = Date.now()
+              sessionState.hasStreamed = true
+              sessionState.streamErrorCount = 0
+            } catch (editErr) {
+              sessionState.streamErrorCount = (sessionState.streamErrorCount || 0) + 1
+              if (isStepFinish) {
+                ctx.logger.warn(`Final edit failed, falling back to sendMessage:`, editErr)
+                await bot.sendMessage(sessionState.channelId, h.parse(processedContent), sessionState.guildId)
+                sessionState.hasStreamed = true
+              } else if (sessionState.streamErrorCount >= 3) {
+                throw editErr // Trigger mode downgrade
+              }
+            }
+          } else {
+            const sentIds = await bot.sendMessage(sessionState.channelId, h.parse(processedContent), sessionState.guildId)
+            if (sentIds && sentIds.length > 0) {
+              sessionState.lastStreamMessageId = sentIds[0]
+              sessionState.lastSentContent = processedContent
+              sessionState.lastStreamTime = Date.now()
+              sessionState.hasStreamed = true
+              sessionState.streamErrorCount = 0
+            }
           }
         }
       } catch (err) {
         ctx.logger.warn(`Native streaming failed, downgrading to segment mode:`, err)
         sessionState.streamMode = 'segment'
-        sessionState.streamBufferSentIndex = fullContent.length
+        sessionState.streamBufferSentIndex = sessionState.lastSentContent?.length || 0
+        break
+      }
+
+      if (!sessionState.hasPendingUpdate && !isStepFinish) break
+      if (isStepFinish && !sessionState.hasPendingUpdate) break
+      await new Promise(r => setTimeout(r, 100))
+    }
+  } finally {
+    sessionState.isUpdating = false
+    if (isStepFinish) {
+      sessionState.hasStreamed = true
+    }
+  }
+}
+
+async function processAssets(ctx: Context, content: string): Promise<string> {
+  const elements = h.parse(content)
+  let changed = false
+
+  for (const element of elements) {
+    if (['img', 'audio', 'video', 'file'].includes(element.type)) {
+      const src = element.attrs.src
+      if (src && (path.isAbsolute(src) || src.startsWith('file://'))) {
+        try {
+          const localPath = src.startsWith('file://') ? fileURLToPath(src) : src
+          if (fs.existsSync(localPath)) {
+            const fileName = path.basename(localPath)
+            const targetDir = path.resolve(ctx.baseDir, 'data/opencode/temp')
+            if (!fs.existsSync(targetDir)) {
+              fs.mkdirSync(targetDir, { recursive: true })
+            }
+            const targetPath = path.join(targetDir, fileName)
+            fs.copyFileSync(localPath, targetPath)
+
+            // Decode URI to show Chinese characters correctly in the message/log
+            const fileUrl = decodeURI(pathToFileURL(targetPath).href)
+            element.attrs.src = fileUrl
+            ctx.logger.info(`[Asset] 资源已处理: ${localPath} -> ${fileUrl}`)
+            changed = true
+          } else {
+            ctx.logger.info(`[Asset] 本地文件不存在，跳过: ${localPath}`)
+          }
+        } catch (err) {
+          ctx.logger.error(`[Asset] 处理资源失败: ${src}`, err)
+        }
       }
     }
   }
 
-  if (isStepFinish) {
-    sessionState.hasStreamed = true
-    handled = true
-  }
-  return handled
+  return changed ? elements.join('') : content
 }
 
 async function handleSegmentedStreaming(
@@ -1343,7 +1482,8 @@ async function handleSegmentedStreaming(
     if (toSend) {
       const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
       if (bot) {
-        await bot.sendMessage(sessionState.channelId, h.parse(toSend), sessionState.guildId)
+        const processedToSend = await processAssets(ctx, toSend)
+        await bot.sendMessage(sessionState.channelId, h.parse(processedToSend), sessionState.guildId)
         sessionState.streamBufferSentIndex = newSentIndex
         sessionState.hasStreamed = true
       }
