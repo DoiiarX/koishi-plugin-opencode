@@ -432,7 +432,8 @@ export function apply(ctx: Context, config: Config) {
           "音频: <audio src='...'/>",
           "视频: <video src='...'/>",
           "通用文件: <file src='...'/>",
-          "请勿对这些标签使用 Markdown 代码块包裹。如果只是发送任务，你不需要读取文件。只需要检查文件是否存在。"
+          "请勿对这些标签使用 Markdown 代码块包裹。如果只是发送任务，你不需要读取文件。只需要检查文件是否存在。",
+          "如果是本地文件，请使用绝对路径。这是由于你的工作区和文件系统路径可能不同。因此要求你必须使用绝对路径。"
         ].join('\n')
 
         // Inject system instructions (no reply)
