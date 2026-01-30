@@ -98,8 +98,11 @@ interface SessionState {
 
   // Deduplication tracking
   sentFinalMessages: Set<string> // messageId for step-finish
-  sentToolCalls: Set<string> // part.id or callID:status
-
+  sentToolCalls: Set<string> // IDs of sent tool parts
+  lastSentContent?: string // To prevent redundant editMessage calls
+  streamErrorCount?: number // Continuous failure count for native mode
+  isUpdating?: boolean // Background update lock
+  hasPendingUpdate?: boolean // Queued update flag
   // Lifecycle
   status?: string // 'idle', 'busy', 'error', etc.
   hasStreamed?: boolean // Whether we have successfully streamed/edited messages
@@ -1096,22 +1099,25 @@ async function handlePartUpdated(ctx: Context, event: any, config: Config) {
       sessionState.partialMessages.set(messageId, current)
     } else if (part.type === 'step-finish') {
       isStepFinish = true
-      shouldSend = true
 
-      if (sessionState.sentFinalMessages.has(messageId)) {
-        shouldSend = false
-        return
-      }
+      if (!enableStreaming) {
+        shouldSend = true
 
-      const parts: string[] = []
-      if (showReasoning && current.reasoning) {
-        parts.push(`🤔 思考: ${current.reasoning}`)
-      }
-      if (current.text) {
-        parts.push(current.text)
-      }
+        if (sessionState.sentFinalMessages.has(messageId)) {
+          shouldSend = false
+          return
+        }
 
-      finalContent = parts.join('\n\n')
+        const parts: string[] = []
+        if (showReasoning && current.reasoning) {
+          parts.push(`🤔 思考: ${current.reasoning}`)
+        }
+        if (current.text) {
+          parts.push(current.text)
+        }
+
+        finalContent = parts.join('\n\n')
+      }
     } else if (part.type === 'tool') {
       if (showToolMessages) {
         const callId = part.callID || 'unknown'
@@ -1182,11 +1188,12 @@ async function handlePartUpdated(ctx: Context, event: any, config: Config) {
         }
 
         if (sessionState.streamMode === 'native') {
-          const handled = await handleNativeStreaming(ctx, sessionState, fullContent, streamInterval, isStepFinish)
-          if (handled) shouldSend = false
+          // Non-blocking: handleNativeStreaming is now responsible for its own loop
+          handleNativeStreaming(ctx, sessionState, messageId, streamInterval, isStepFinish)
+          if (isStepFinish) shouldSend = false
         } else if (sessionState.streamMode === 'segment') {
-          const handled = await handleSegmentedStreaming(ctx, sessionState, fullContent, isStepFinish)
-          if (handled) shouldSend = false
+          await handleSegmentedStreaming(ctx, sessionState, fullContent, isStepFinish)
+          if (isStepFinish) shouldSend = false
         }
 
         // If this is the final part of a step, ensure we mark as streamed
@@ -1243,44 +1250,113 @@ async function handlePartUpdated(ctx: Context, event: any, config: Config) {
 async function handleNativeStreaming(
   ctx: Context,
   sessionState: SessionState,
-  fullContent: string,
+  messageId: string,
   streamInterval: number,
   isStepFinish: boolean
-): Promise<boolean> {
+): Promise<void> {
+  // 1. Check if already updating
+  if (sessionState.isUpdating) {
+    if (isStepFinish) sessionState.hasPendingUpdate = true // Ensure final update is queued
+    else sessionState.hasPendingUpdate = true
+    return
+  }
+
   const now = Date.now()
   const lastTime = sessionState.lastStreamTime || 0
-  let handled = false
 
-  if (isStepFinish || (now - lastTime > streamInterval) || !sessionState.lastStreamMessageId) {
-    const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
-    if (bot) {
+  // 2. Initial trigger check
+  if (!isStepFinish && (now - lastTime < streamInterval) && sessionState.lastStreamMessageId) {
+    return
+  }
+
+  sessionState.isUpdating = true
+
+  try {
+    // 3. Update Loop: Keep updating until no more pending updates
+    while (true) {
+      sessionState.hasPendingUpdate = false
+
+      // Re-compose the latest full content from memory
+      const current = sessionState.partialMessages?.get(messageId)
+      if (!current) break
+
+      const parts: string[] = []
+      // Use the same reasoning/processing flags from the higher context if possible
+      // (For simplicity here we re-evaluate showReasoning - in a real refactor we might pass flags)
+      const config = ctx.config as Config
+      if (config.showReasoning && current.reasoning) {
+        parts.push(`🤔 思考: ${current.reasoning}`)
+      }
+      if (current.text) {
+        parts.push(current.text)
+      }
+      const latestFullContent = parts.join('\n\n')
+
+      if (!latestFullContent) break
+
+      const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
+      if (!bot) break
+
       try {
-        const processedContent = await processAssets(ctx, fullContent)
-        if (sessionState.lastStreamMessageId) {
-          await bot.editMessage(sessionState.channelId, sessionState.lastStreamMessageId, h.parse(processedContent))
-          sessionState.lastStreamTime = now
-          sessionState.hasStreamed = true
+        const processedContent = await processAssets(ctx, latestFullContent)
+
+        // Deduplication
+        if (processedContent === sessionState.lastSentContent && !isStepFinish) {
+          // If no change and not finished, we can wait. 
+          // But if we're in the loop, maybe something changed but processAssets stripped it?
         } else {
-          const sentIds = await bot.sendMessage(sessionState.channelId, h.parse(processedContent), sessionState.guildId)
-          if (sentIds && sentIds.length > 0) {
-            sessionState.lastStreamMessageId = sentIds[0]
-            sessionState.lastStreamTime = now
-            sessionState.hasStreamed = true
+          if (sessionState.lastStreamMessageId) {
+            try {
+              await bot.editMessage(sessionState.channelId, sessionState.lastStreamMessageId, h.parse(processedContent))
+              sessionState.lastSentContent = processedContent
+              sessionState.lastStreamTime = Date.now()
+              sessionState.hasStreamed = true
+              sessionState.streamErrorCount = 0
+            } catch (editErr) {
+              sessionState.streamErrorCount = (sessionState.streamErrorCount || 0) + 1
+              if (isStepFinish) {
+                ctx.logger.warn(`Final edit failed, falling back to sendMessage:`, editErr)
+                await bot.sendMessage(sessionState.channelId, h.parse(processedContent), sessionState.guildId)
+                sessionState.hasStreamed = true
+              } else if (sessionState.streamErrorCount >= 3) {
+                throw editErr // Trigger downgrade
+              }
+            }
+          } else {
+            const sentIds = await bot.sendMessage(sessionState.channelId, h.parse(processedContent), sessionState.guildId)
+            if (sentIds && sentIds.length > 0) {
+              sessionState.lastStreamMessageId = sentIds[0]
+              sessionState.lastSentContent = processedContent
+              sessionState.lastStreamTime = Date.now()
+              sessionState.hasStreamed = true
+              sessionState.streamErrorCount = 0
+            }
           }
         }
       } catch (err) {
-        ctx.logger.warn(`Native streaming failed, downgrading to segment mode:`, err)
+        ctx.logger.warn(`Native streaming failed after retries, downgrading to segment mode:`, err)
         sessionState.streamMode = 'segment'
-        sessionState.streamBufferSentIndex = fullContent.length
+        sessionState.streamBufferSentIndex = sessionState.lastSentContent?.length || 0
+        break // Exit loop on downgrade
       }
+
+      // Exit loop if no more pending updates arrive during the network call
+      // AND we are not at the final stage
+      if (!sessionState.hasPendingUpdate && !isStepFinish) break
+
+      // If it's step finish, we might want one last check of hasPendingUpdate 
+      // but usually the finish call itself sets isStepFinish=true
+      if (isStepFinish && !sessionState.hasPendingUpdate) break
+
+      // Safety: Add a small sleep between updates to prevent spin locks if network is too fast
+      await new Promise(r => setTimeout(r, 100))
+    }
+  } finally {
+    sessionState.isUpdating = false
+    if (isStepFinish) {
+      sessionState.hasStreamed = true
     }
   }
-
-  if (isStepFinish) {
-    sessionState.hasStreamed = true
-    handled = true
-  }
-  return handled
 }
 
 async function processAssets(ctx: Context, content: string): Promise<string> {
