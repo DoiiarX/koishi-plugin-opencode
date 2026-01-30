@@ -7,6 +7,9 @@ declare module 'koishi' {
 }
 
 import { Context, Schema, h } from 'koishi'
+import * as fs from 'fs'
+import * as path from 'path'
+import { fileURLToPath, pathToFileURL } from 'url'
 
 export const name = 'opencode'
 
@@ -373,6 +376,9 @@ export function apply(ctx: Context, config: Config) {
     .action(async ({ session: chatbotSession }, ...messageParts) => {
       const message = messageParts.join(' ')
       if (!message.trim()) return // Ignore empty messages
+
+      ctx.logger.info(`[${chatbotSession.platform}-${chatbotSession.userId}] 发送消息: ${message.substring(0, 50)}...`)
+
       const directory = config.directory || 'default'
       const dirHash = simpleHash(directory)
       const sessionKey = `${chatbotSession.platform}-${chatbotSession.userId}-${dirHash}`
@@ -413,6 +419,7 @@ export function apply(ctx: Context, config: Config) {
         ctx.logger.info(`会话状态已初始化或合并: ${sessionKey}`)
 
         if (config.showProcessingMessage ?? true) {
+          ctx.logger.info(`[${chatbotSession.platform}-${chatbotSession.userId}] 发送消息: ${message.substring(0, 50)}...`)
           await chatbotSession.send(`🔄 正在处理: ${message.substring(0, 30)}...`)
         }
 
@@ -554,7 +561,8 @@ export function apply(ctx: Context, config: Config) {
             if (textParts.length === 0) {
               formattedResponse = '[无响应 - 可能是生成超时或需要更多时间]'
             }
-            await chatbotSession.send(h.parse(formattedResponse))
+            const processedFinal = await processAssets(ctx, formattedResponse)
+            await chatbotSession.send(h.parse(processedFinal))
           }
 
         } finally {
@@ -1194,7 +1202,8 @@ async function handlePartUpdated(ctx: Context, event: any, config: Config) {
       if (!enableStreaming || (part.type !== 'text' && part.type !== 'reasoning' && part.type !== 'step-finish')) {
         const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
         if (bot) {
-          await bot.sendMessage(sessionState!.channelId, finalContent, sessionState!.guildId)
+          const processedFinal = await processAssets(ctx, finalContent)
+          await bot.sendMessage(sessionState!.channelId, h.parse(processedFinal), sessionState!.guildId)
           sessionState.hasStreamed = true
 
           // Mark as sent
@@ -1217,7 +1226,8 @@ async function handlePartUpdated(ctx: Context, event: any, config: Config) {
       if (!sessionState.sentToolCalls.has(partId)) {
         const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
         if (bot) {
-          await bot.sendMessage(sessionState!.channelId, formattedMessage, sessionState!.guildId)
+          const processedFallback = await processAssets(ctx, formattedMessage)
+          await bot.sendMessage(sessionState!.channelId, h.parse(processedFallback), sessionState!.guildId)
           sessionState.sentToolCalls.add(partId)
           sessionState.hasStreamed = true
         }
@@ -1245,12 +1255,13 @@ async function handleNativeStreaming(
     const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
     if (bot) {
       try {
+        const processedContent = await processAssets(ctx, fullContent)
         if (sessionState.lastStreamMessageId) {
-          await bot.editMessage(sessionState.channelId, sessionState.lastStreamMessageId, h.parse(fullContent))
+          await bot.editMessage(sessionState.channelId, sessionState.lastStreamMessageId, h.parse(processedContent))
           sessionState.lastStreamTime = now
           sessionState.hasStreamed = true
         } else {
-          const sentIds = await bot.sendMessage(sessionState.channelId, h.parse(fullContent), sessionState.guildId)
+          const sentIds = await bot.sendMessage(sessionState.channelId, h.parse(processedContent), sessionState.guildId)
           if (sentIds && sentIds.length > 0) {
             sessionState.lastStreamMessageId = sentIds[0]
             sessionState.lastStreamTime = now
@@ -1270,6 +1281,43 @@ async function handleNativeStreaming(
     handled = true
   }
   return handled
+}
+
+async function processAssets(ctx: Context, content: string): Promise<string> {
+  const elements = h.parse(content)
+  let changed = false
+
+  for (const element of elements) {
+    if (['img', 'audio', 'video', 'file'].includes(element.type)) {
+      const src = element.attrs.src
+      if (src && (path.isAbsolute(src) || src.startsWith('file://'))) {
+        try {
+          const localPath = src.startsWith('file://') ? fileURLToPath(src) : src
+          if (fs.existsSync(localPath)) {
+            const fileName = path.basename(localPath)
+            const targetDir = path.resolve(ctx.baseDir, 'data/opencode/temp')
+            if (!fs.existsSync(targetDir)) {
+              fs.mkdirSync(targetDir, { recursive: true })
+            }
+            const targetPath = path.join(targetDir, fileName)
+            fs.copyFileSync(localPath, targetPath)
+
+            // Decode URI to show Chinese characters correctly in the message/log
+            const fileUrl = decodeURI(pathToFileURL(targetPath).href)
+            element.attrs.src = fileUrl
+            ctx.logger.info(`[Asset] 资源已处理: ${localPath} -> ${fileUrl}`)
+            changed = true
+          } else {
+            ctx.logger.info(`[Asset] 本地文件不存在，跳过: ${localPath}`)
+          }
+        } catch (err) {
+          ctx.logger.error(`[Asset] 处理资源失败: ${src}`, err)
+        }
+      }
+    }
+  }
+
+  return changed ? elements.join('') : content
 }
 
 async function handleSegmentedStreaming(
@@ -1343,7 +1391,8 @@ async function handleSegmentedStreaming(
     if (toSend) {
       const bot = ctx.bots.find(b => b.platform === sessionState?.platform && b.selfId === sessionState?.selfId)
       if (bot) {
-        await bot.sendMessage(sessionState.channelId, h.parse(toSend), sessionState.guildId)
+        const processedToSend = await processAssets(ctx, toSend)
+        await bot.sendMessage(sessionState.channelId, h.parse(processedToSend), sessionState.guildId)
         sessionState.streamBufferSentIndex = newSentIndex
         sessionState.hasStreamed = true
       }
